@@ -55,25 +55,50 @@ The application will be deployed to two namespaces with distinct tagging strateg
 
 ## Step-by-Step Deployment
 
-### Step 1: Build the Docker Image
+### Step 0: Configure Docker Registry (Optional - Remote Registry Only)
+
+If using a **remote Docker registry** (Docker Hub, ECR, GCR, etc.), configure it first:
 
 ```bash
 # Navigate to the app directory
 cd apps/datadog-logs-demo-go
 
+# Set your Docker registry
+export DOCKER_USER=docker.io/yourusername
+# Examples:
+#   export DOCKER_USER=docker.io/johndoe
+#   export DOCKER_USER=123456789.dkr.ecr.us-east-1.amazonaws.com
+#   export DOCKER_USER=gcr.io/my-project
+
+# Run the configuration script
+./set-registry.sh
+```
+
+The script will:
+- ✅ Backup original deployment files (*.yaml.bak)
+- ✅ Update image references in all deployment files
+- ✅ Show next steps
+
+**Skip this step** if using local Kubernetes (kind, minikube, Docker Desktop).
+
+### Step 1: Build the Docker Image
+
+```bash
+# Navigate to the app directory (if not already there)
+cd apps/datadog-logs-demo-go
+
 # Build the Docker image
 docker build -t datadog-logs-demo:latest .
 
-# Tag for your registry (if using remote registry)
-docker tag datadog-logs-demo:latest <your-registry>/datadog-logs-demo:latest
+# If using REMOTE registry (after running set-registry.sh):
+docker tag datadog-logs-demo:latest ${DOCKER_USER}/datadog-logs-demo:latest
+docker push ${DOCKER_USER}/datadog-logs-demo:latest
 
-# Push to registry (if using remote registry)
-docker push <your-registry>/datadog-logs-demo:latest
+# If using LOCAL Kubernetes:
+# For kind: kind load docker-image datadog-logs-demo:latest
+# For minikube: minikube image load datadog-logs-demo:latest
+# For Docker Desktop: Image is already available
 ```
-
-**Note**: If using a remote registry, update the `image` field in both deployment files:
-- `k8s/deployment-test-a.yaml`
-- `k8s/deployment-test-b.yaml`
 
 ### Step 2: Create Namespaces with Tags
 
@@ -351,6 +376,9 @@ kubectl logs -n datadog-test-b -l app=datadog-logs-demo -f --tail=50
 ```bash
 kubectl delete -f k8s/deployment-test-a.yaml
 kubectl delete -f k8s/deployment-test-b.yaml
+
+# Or using make
+make k8s-delete-all
 ```
 
 ### Delete Everything (Including Namespaces)
@@ -361,6 +389,17 @@ kubectl delete namespace datadog-test-b
 ```
 
 **Note**: This will delete all resources in these namespaces.
+
+### Restore Original Deployment Files
+
+If you used `set-registry.sh` to configure your Docker registry:
+
+```bash
+# Restore original deployment files from backups
+./restore-registry.sh
+```
+
+This will restore the deployment files to use `datadog-logs-demo:latest` instead of your custom registry.
 
 ## Makefile Commands
 

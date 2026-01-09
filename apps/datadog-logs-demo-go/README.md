@@ -191,14 +191,20 @@ docker run datadog-logs-demo:latest
 ### Kubernetes Deployment
 
 ```bash
+# Optional: Configure Docker registry for remote registries
+export DOCKER_USER=docker.io/yourusername
+./set-registry.sh
+
 # Create namespaces
 kubectl apply -f k8s/namespace.yaml
 
 # Deploy the application
-kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/deployment-test-a.yaml
 
 # Verify deployment
 kubectl get pods -n datadog-test-a
+
+# For multi-namespace deployment, see DEPLOYMENT_GUIDE.md
 ```
 
 ## Datadog Configuration Examples
@@ -427,6 +433,8 @@ datadog-logs-demo-go/
 ├── .dockerignore              # Docker ignore patterns
 ├── .gitignore                 # Git ignore patterns
 ├── Makefile                   # Build and deployment automation
+├── set-registry.sh            # Script to configure Docker registry
+├── restore-registry.sh        # Script to restore original deployment files
 ├── README.md                  # This file (comprehensive feature documentation)
 ├── QUICKSTART.md              # Quick start guide
 ├── DEPLOYMENT_GUIDE.md        # Multi-namespace deployment guide

@@ -32,25 +32,36 @@ make docker-run
 
 ## Option 3: Deploy to Kubernetes
 
-### Step 1: Build and Push Image
+### Step 1: Configure Docker Registry (Optional - for remote registries)
+
+If using a **remote Docker registry** (Docker Hub, ECR, GCR, etc.), use the provided script:
+
+```bash
+# Set your Docker registry
+export DOCKER_USER=docker.io/yourusername
+# Or for ECR: export DOCKER_USER=123456789.dkr.ecr.us-east-1.amazonaws.com
+# Or for GCR: export DOCKER_USER=gcr.io/my-project
+
+# Run the configuration script
+./set-registry.sh
+```
+
+The script will automatically update all deployment files with your registry.
+
+**Skip this step** if using local Kubernetes (kind, minikube, Docker Desktop) - the default `datadog-logs-demo:latest` will work.
+
+### Step 2: Build and Push Image
 
 ```bash
 # Build the Docker image
 make docker-build
 
-# Tag for your registry
-docker tag datadog-logs-demo:latest <your-registry>/datadog-logs-demo:latest
+# If using REMOTE registry (after running set-registry.sh):
+docker push ${DOCKER_USER}/datadog-logs-demo:latest
 
-# Push to registry
-docker push <your-registry>/datadog-logs-demo:latest
-```
-
-### Step 2: Update Kubernetes Manifest
-
-Edit `k8s/deployment.yaml` and update the image:
-
-```yaml
-image: <your-registry>/datadog-logs-demo:latest
+# If using LOCAL Kubernetes:
+# For kind: kind load docker-image datadog-logs-demo:latest
+# For minikube: minikube image load datadog-logs-demo:latest
 ```
 
 ### Step 3: Deploy
@@ -110,6 +121,9 @@ make k8s-delete
 
 # Delete namespaces (optional)
 kubectl delete namespace datadog-test-a datadog-test-b
+
+# Restore original deployment files (if you ran set-registry.sh)
+./restore-registry.sh
 ```
 
 ## Troubleshooting
