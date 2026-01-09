@@ -14,12 +14,12 @@ datadog:
   # Log Collection Configuration
   logs:
     enabled: true
-    containerCollectAll: false
+    containerCollectAll: true
     # Auto-detect and aggregate multi-line logs (e.g., stack traces)
     autoMultiLineDetection: true
 
   # Only collect logs from specific namespaces
-  containerIncludeLogs: "kube_namespace:datadog-test-a kube_namespace:datadog-test-b"
+  containerIncludeLogs: "kube_namespace:datadog-test-a kube_namespace:datadog-test-b kube_namespace:datadog"
 
   # Disable infrastructure monitoring - metrics only
   processAgent:
@@ -46,10 +46,6 @@ datadog:
     # Example: Exclude health check logs and mask sensitive data
     # - name: DD_LOGS_CONFIG_PROCESSING_RULES
     #   value: '[{"type":"exclude_at_match","name":"exclude_healthcheck","pattern":"GET /health"}]'
-
-# Disable System Probe (network/security monitoring)
-systemProbe:
-  enabled: false
 
 registry: "public.ecr.aws/datadog"
 
