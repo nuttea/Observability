@@ -1,0 +1,65 @@
+datadog:
+  site: "us5.datadoghq.com"
+  clusterName: "cluster-102"
+  apiKeyExistingSecret: "datadog-secret"
+  clusterChecks:
+    enabled: true
+  orchestratorExplorer:
+    enabled: true
+  tags:
+    - "env:dev"
+
+  # Log Collection Configuration
+  logs:
+    enabled: true
+    containerCollectAll: false
+    # Auto-detect and aggregate multi-line logs (e.g., stack traces)
+    autoMultiLineDetection: true
+
+  # Only collect logs from specific namespaces
+  containerIncludeLogs: "kube_namespace:datadog-test-a kube_namespace:datadog-test-b"
+
+  # Disable infrastructure monitoring - metrics only
+  processAgent:
+    enabled: false
+    containerCollection: false
+
+  # Environment Variables for Advanced Configuration
+  env:
+    # Disable metric payloads
+    - name: DD_ENABLE_PAYLOADS_EVENTS
+      value: "false"
+    - name: DD_ENABLE_PAYLOADS_SERIES
+      value: "false"
+    - name: DD_ENABLE_PAYLOADS_SERVICE_CHECKS
+      value: "false"
+    - name: DD_ENABLE_PAYLOADS_SKETCHES
+      value: "false"
+
+    # Log Collection Performance and Features
+    # Use file-based log collection (recommended for better performance)
+    - name: DD_LOGS_CONFIG_K8S_CONTAINER_USE_FILE
+      value: "true"
+
+    # Limit the number of log files the agent can tail simultaneously
+    # Increase if you have many containers per node
+    - name: DD_LOGS_CONFIG_OPEN_FILES_LIMIT
+      value: "500"
+
+    # Auto multi-line detection (can also be set via logs.autoMultiLineDetection)
+    - name: DD_LOGS_CONFIG_AUTO_MULTI_LINE_DETECTION
+      value: "true"
+
+    # Optional: Global log processing rules (JSON format)
+    # Example: Exclude health check logs and mask sensitive data
+    # - name: DD_LOGS_CONFIG_PROCESSING_RULES
+    #   value: '[{"type":"exclude_at_match","name":"exclude_healthcheck","pattern":"GET /health"}]'
+
+# Disable System Probe (network/security monitoring)
+systemProbe:
+  enabled: false
+
+registry: "public.ecr.aws/datadog"
+
+# no Infra monitor
+# Logs ship only, seletced namespaces

@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datadog-test-a
+  labels:
+    # Unified Service Tagging
+    tags.datadoghq.com/env: "development"
+    # Team and Organization
+    tags.datadoghq.com/team: "platform-engineering"
+    tags.datadoghq.com/cost-center: "engineering"
+    # System and Infrastructure
+    tags.datadoghq.com/system: "observability-demo"
+    # Business Context
+    tags.datadoghq.com/business-unit: "infrastructure"
+    tags.datadoghq.com/project: "datadog-logs-testing"
+    # Compliance and Security
+    tags.datadoghq.com/compliance: "sox"
+    tags.datadoghq.com/data-classification: "internal"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datadog-test-b
+  labels:
+    # Unified Service Tagging
+    tags.datadoghq.com/env: "staging"
+    # Team and Organization
+    tags.datadoghq.com/team: "application-team"
+    tags.datadoghq.com/cost-center: "product"
+    # System and Infrastructure
+    tags.datadoghq.com/system: "ecommerce-platform"
+    # Business Context
+    tags.datadoghq.com/business-unit: "sales"
+    tags.datadoghq.com/project: "checkout-service"
+    # Compliance and Security
+    tags.datadoghq.com/compliance: "pci-dss"
+    tags.datadoghq.com/data-classification: "confidential"
