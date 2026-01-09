@@ -1,4 +1,6 @@
 datadog:
+  operator:
+    enabled: false
   site: "us5.datadoghq.com"
   clusterName: "cluster-102"
   apiKeyExistingSecret: "datadog-secret"
@@ -35,11 +37,6 @@ datadog:
       value: "false"
     - name: DD_ENABLE_PAYLOADS_SKETCHES
       value: "false"
-
-    # Log Collection Performance and Features
-    # Note: DD_LOGS_CONFIG_K8S_CONTAINER_USE_FILE is automatically set by the Helm chart
-    # Note: DD_LOGS_CONFIG_AUTO_MULTI_LINE_DETECTION is automatically set via logs.autoMultiLineDetection above
-
     # Limit the number of log files the agent can tail simultaneously
     # Increase if you have many containers per node
     - name: DD_LOGS_CONFIG_OPEN_FILES_LIMIT
