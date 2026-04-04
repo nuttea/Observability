@@ -1,0 +1,28 @@
+# ── Terraform state & secrets ────────────────────────────────
+terraform.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ── SSH keys ─────────────────────────────────────────────────
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# ── VM images ────────────────────────────────────────────────
+*.qcow2
+*.qcow
+*.vmdk
+*.ova
+
+# ── OS ────────────────────────────────────────────────────────
+.DS_Store
+*.swp
+*~

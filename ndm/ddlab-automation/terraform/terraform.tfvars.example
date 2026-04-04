@@ -1,0 +1,65 @@
+# ============================================================
+# terraform.tfvars — Fill in your values before running
+# terraform apply
+#
+# ADD THIS FILE TO .gitignore — it contains secrets
+# ============================================================
+
+# ── GCP ─────────────────────────────────────────────────────
+gcp_project         = "your-gcp-project-id"
+gcp_region          = "asia-southeast1"        # Singapore (closest to Thailand)
+gcp_zone            = "asia-southeast1-a"
+gce_service_account = "compute@developer.gserviceaccount.com"  # or custom SA email
+
+# ── SSH Access ───────────────────────────────────────────────
+ssh_public_key  = "ssh-ed25519 AAAAC3Nz... your@email.com"
+# ssh_source_cidrs removed — SSH now via IAP tunnel (no public IP needed)
+# Connect with: gcloud compute ssh labuser@<instance> --tunnel-through-iap
+
+# ── Datadog ──────────────────────────────────────────────────
+dd_api_key  = "YOUR_DATADOG_API_KEY_HERE"
+dd_site     = "datadoghq.com"           # or ap1.datadoghq.com for Asia Pacific
+dd_namespace = "lab-th"                 # groups all devices under this namespace
+
+# ── SNMP Credentials ─────────────────────────────────────────
+snmp_community    = "your-snmp-ro"
+snmp_v3_user      = "dduser"
+snmp_v3_auth_pass = "your-snmp-v3-auth-pass"     # min 8 chars, change this
+snmp_v3_priv_pass = "your-snmp-v3-priv-pass"     # min 8 chars, change this
+
+# ── Device Password ──────────────────────────────────────────
+# Used for: CSR SSH, F5 admin, PAN admin (set during device config)
+device_password = "your-device-password"
+
+# ── VM Image Tags ─────────────────────────────────────────────
+# Set these to match the tags you built with vrnetlab make
+csr_image_tag = "vrnetlab/cisco_csr1000v:17.03.06"
+pan_image_tag = "vrnetlab/paloalto_panos:10.2.0"
+f5_image_tag  = "vrnetlab/f5_bigip-ve:16.1.4"
+
+# ── F5 LTM License ───────────────────────────────────────────
+# Optional: F5 BIG-IP VE trial registration key (from https://www.f5.com/trial)
+# If provided, LTM is activated with a VIP (192.168.30.100:80 -> shopist.io)
+# If empty (default), an nginx reverse proxy is deployed as a substitute
+# f5_license_key = "XXXXX-XXXXX-XXXXX-XXXXX-XXXXXXX"
+
+# ── BGP ──────────────────────────────────────────────────────
+bgp_local_as = 65000
+bgp_peer_as  = 65001
+
+# ── Geomap — Thailand ────────────────────────────────────────
+# Bangkok — Sukhumvit / central datacenter area
+geo_bkk_lat   = "13.7563"
+geo_bkk_lon   = "100.5018"
+geo_bkk_label = "Bangkok-DC1"
+
+# Chiang Mai — city center / tech park area
+geo_cnx_lat   = "18.7883"
+geo_cnx_lon   = "98.9853"
+geo_cnx_label = "ChiangMai-DC2"
+
+# ── Optional Overrides ────────────────────────────────────────
+# lab_name        = "ddlab-ndm"        # change if running multiple labs
+# machine_type    = "n2-standard-16"   # 16 vCPU / 64GB RAM
+# disk_size_gb    = 200
+# subnet_cidr     = "10.100.0.0/24"
