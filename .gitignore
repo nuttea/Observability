@@ -1,0 +1,87 @@
+# ── Environment / secrets ────────────────────────────────────
+# API keys, credentials, anything loaded at run time.
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# ── Terraform state & secrets ────────────────────────────────
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Saved `terraform plan` output — binary files that may contain rendered
+# sensitive values (e.g. `startup_script_rendered`), so never commit.
+tfplan
+*.tfplan
+tfplan.binary
+
+# ── Cloud credentials ────────────────────────────────────────
+# Google Cloud / AWS / Azure credentials accidentally dropped in the repo.
+*-key.json
+gcp-*.json
+application_default_credentials.json
+*.pem
+*.key
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+authorized_keys
+
+# ── VM images / large binaries ───────────────────────────────
+*.qcow2
+*.qcow
+*.vmdk
+*.ova
+*.iso
+*.img
+
+# ── Build artifacts ──────────────────────────────────────────
+node_modules/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.tox/
+.coverage
+coverage.xml
+htmlcov/
+
+# ── Go ───────────────────────────────────────────────────────
+vendor/
+bin/
+
+# ── IDE / editor ─────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.nvimrc.local
+
+# ── OS ───────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ── Logs / runtime ───────────────────────────────────────────
+*.log
+!scripts/**/*.log.example
+logs/

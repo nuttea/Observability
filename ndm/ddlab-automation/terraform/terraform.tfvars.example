@@ -1,50 +1,54 @@
 # ============================================================
-# terraform.tfvars — Copy to terraform.tfvars and fill in
+# terraform.tfvars — Copy to terraform.tfvars and fill in.
 #
-# ADD terraform.tfvars TO .gitignore — it contains secrets
+# terraform.tfvars is .gitignored (both at repo root and in
+# ndm/ddlab-automation/.gitignore) — it contains secrets.
+# This .example file MUST NOT contain real credentials.
 # ============================================================
 
 # ── GCP ─────────────────────────────────────────────────────
-gcp_project         = "your-gcp-project-id"
-gcp_region          = "asia-southeast1"                         # Singapore — nearest with N2 nested-virt
+gcp_project         = "<your-gcp-project-id>"
+gcp_region          = "asia-southeast1"
 gcp_zone            = "asia-southeast1-a"
-gce_service_account = "compute@developer.gserviceaccount.com"   # or a custom SA email
+gce_service_account = "<numeric-id>-compute@developer.gserviceaccount.com"
 
 # ── SSH Access ──────────────────────────────────────────────
-# Paste the contents of your ~/.ssh/id_ed25519.pub (or id_rsa.pub)
-# You SSH via IAP tunnel, so there's no public IP exposure:
+# Paste the contents of your ~/.ssh/id_ed25519.pub (or id_rsa.pub).
+# SSH uses Google IAP tunnel — no public IP is created:
 #   gcloud compute ssh labuser@ddlab-ndm --tunnel-through-iap
-ssh_public_key = "ssh-ed25519 AAAAC3Nz... your@email.com"
+ssh_public_key = "ssh-ed25519 <YOUR_PUBLIC_KEY_CONTENT> <your@email.com>"
 
 # ── Datadog ──────────────────────────────────────────────────
-# The API key is loaded from ./.env at apply time — do NOT put it here.
-#   1) Put   DD_API_KEY=xxxxxx   in ./.env
-#   2) Before running terraform: set -a && source .env && set +a
-#                                export TF_VAR_dd_api_key="$DD_API_KEY"
+# DO NOT put the API key here. It is loaded from .env at apply time:
+#   1) Put   DD_API_KEY=<your-key>   in ./.env
+#   2) Before running terraform:
+#        set -a && source .env && set +a
+#        export TF_VAR_dd_api_key="$DD_API_KEY"
 # If unset, Terraform will prompt for it interactively.
 dd_site      = "us3.datadoghq.com"   # allowed: datadoghq.com | us3.datadoghq.com | us5.datadoghq.com
 dd_namespace = "lab-th"              # NDM namespace — groups all lab devices
 
 # ── SNMP Credentials ─────────────────────────────────────────
 # Used by the 5 CSR1000v SNMPv3 config AND the Datadog Agent SNMP check.
-snmp_community    = "dd-snmp-ro"
-snmp_v3_user      = "dduser"
-snmp_v3_auth_pass = "LabAuth@2024!"   # min 8 chars
-snmp_v3_priv_pass = "LabPriv@2024!"   # min 8 chars
+# Replace with strong values of your own (min 8 chars for auth/priv).
+snmp_community    = "<change-me-community>"
+snmp_v3_user      = "<change-me-user>"
+snmp_v3_auth_pass = "<CHANGE_ME_AUTH_PASS>"
+snmp_v3_priv_pass = "<CHANGE_ME_PRIV_PASS>"
 
-# ── Device Password (applied by IOS enable/username) ─────────
-device_password = "LabAdmin@2024!"
+# ── Device Password (IOS enable / username) ──────────────────
+device_password = "<CHANGE_ME_DEVICE_PASS>"
 
 # ── CSR1000v image tag ───────────────────────────────────────
-# This must match whatever tag `build-images.sh` produced from your
-# licensed qcow2. Check with: docker images | grep vrnetlab.
-csr_image_tag = "vrnetlab/cisco_csr1000v:16.07.01"
+# Must match the tag `build-images.sh` produced from your licensed qcow2.
+# Check with: docker images | grep vrnetlab
+csr_image_tag = "vrnetlab/cisco_csr1000v:<version-you-built>"
 
 # ── BGP ──────────────────────────────────────────────────────
 bgp_local_as = 65000   # CSR1-5 iBGP AS
 bgp_peer_as  = 65001   # FRR (bgp-peer) eBGP AS — simulates upstream ISP
 
-# ── Geomap ───────────────────────────────────────────────────
+# ── Geomap — Thailand default ────────────────────────────────
 # Bangkok — CSR1 (BKK-Edge)
 geo_bkk_lat   = "13.7563"
 geo_bkk_lon   = "100.5018"
@@ -55,23 +59,27 @@ geo_cnx_lon   = "98.9853"
 geo_cnx_label = "ChiangMai-DC2"
 
 # ── Optional overrides ───────────────────────────────────────
-# Default is enough for 5 CSRs (4 GB RAM each × 5 = 20 GB + overhead)
-machine_type = "n2-standard-8"    # 8 vCPU / 32 GB
-# disk_size_gb = 200              # 200 GB is plenty for images + logs
+# Defaults fit 5 CSRs (4 GB QEMU RAM each + agent + OS).
+machine_type = "n2-standard-8"   # 8 vCPU / 32 GB
+# disk_size_gb = 200
 # lab_name     = "ddlab-ndm"
 # subnet_cidr  = "10.100.0.0/24"
 
-# Management IPs for each CSR (defaults are fine — only override if you
-# have conflicting addressing in your own environment)
+# Management IPs for each CSR (override only if conflicting with your env)
 # csr_mgmt_ip  = "172.20.20.10"   # CSR1  (BKK-Edge)
 # csr2_mgmt_ip = "172.20.20.11"   # CSR2  (WAN-Transit)
 # csr3_mgmt_ip = "172.20.20.12"   # CSR3  (CNX-Edge)
 # csr4_mgmt_ip = "172.20.20.14"   # CSR4  (CNX-Access)
 # csr5_mgmt_ip = "172.20.20.15"   # CSR5  (CNX-Endpoint)
 
-# The pan_* and f5_* variables are DEPRECATED (kept for backward-compat
-# with older tfvars files). The topology is CSR-only now; leave them
-# commented.
-# pan_image_tag      = "vrnetlab/paloalto_pa-vm:11.0.0"
-# f5_image_tag       = "vrnetlab/f5_bigip-ve:16.1.6.1-0.0.11"
-# f5_license_key     = ""
+# Image cache bucket (created by Terraform; name defaults to
+# <project>-<lab_name>-cache). Override only if you want a shared /
+# pre-existing bucket.
+# image_cache_bucket_name   = ""
+# image_cache_force_destroy = false   # true = terraform destroy wipes the cache too
+
+# pan_* and f5_* variables are DEPRECATED — the topology is CSR-only now.
+# They remain as no-op placeholders so older tfvars files still parse.
+# pan_image_tag  = ""
+# f5_image_tag   = ""
+# f5_license_key = ""
