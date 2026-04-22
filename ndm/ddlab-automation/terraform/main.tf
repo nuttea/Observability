@@ -39,7 +39,15 @@ locals {
   # Ref: https://cloud.google.com/iap/docs/using-tcp-forwarding#create-firewall-rule
   google_iap_cidr = "35.235.240.0/20"
 
+  # Default cache bucket name ("<project>-<lab>-cache") if user doesn't
+  # override. Project-scoped — avoids global GCS namespace collisions.
+  image_cache_bucket = coalesce(
+    var.image_cache_bucket_name,
+    "${var.gcp_project}-${var.lab_name}-cache"
+  )
+
   startup_script = templatefile("${path.module}/../scripts/startup.sh.tpl", {
+    image_cache_bucket = local.image_cache_bucket
     dd_api_key         = var.dd_api_key
     dd_site            = var.dd_site
     dd_namespace       = var.dd_namespace
@@ -51,6 +59,10 @@ locals {
     snmp_v3_priv_pass  = var.snmp_v3_priv_pass
     device_password    = var.device_password
     csr_mgmt_ip        = var.csr_mgmt_ip
+    csr2_mgmt_ip       = var.csr2_mgmt_ip
+    csr3_mgmt_ip       = var.csr3_mgmt_ip
+    csr4_mgmt_ip       = var.csr4_mgmt_ip
+    csr5_mgmt_ip       = var.csr5_mgmt_ip
     pan_mgmt_ip        = var.pan_mgmt_ip
     f5_active_mgmt_ip  = var.f5_active_mgmt_ip
     f5_standby_mgmt_ip = var.f5_standby_mgmt_ip
@@ -68,6 +80,37 @@ locals {
     f5_image_tag       = var.f5_image_tag
     f5_license_key     = var.f5_license_key
   })
+}
+
+# ── Image cache bucket ───────────────────────────────────────
+# Persists the licensed CSR1000v qcow2 + the pre-built vrnetlab
+# Docker image tarball. On `terraform apply`, the GCE startup script
+# checks this bucket and either:
+#   - loads a cached docker-image tarball (fast, seconds)
+#   - builds from the cached qcow2 and re-uploads the tarball (slow, once)
+#   - logs upload instructions if neither is present (first-time setup)
+resource "google_storage_bucket" "image_cache" {
+  name                        = local.image_cache_bucket
+  location                    = var.gcp_region
+  force_destroy               = var.image_cache_force_destroy
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  labels                      = local.labels
+
+  lifecycle {
+    # Never replace the bucket silently. If you really want to start
+    # over, set image_cache_force_destroy=true and run terraform
+    # destroy, or run `terraform state rm` to detach from state and
+    # delete manually via gsutil.
+    prevent_destroy = false
+  }
+}
+
+# Grant the GCE VM's service account read/write access to the cache.
+resource "google_storage_bucket_iam_member" "image_cache_sa" {
+  bucket = google_storage_bucket.image_cache.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${var.gce_service_account}"
 }
 
 # ── VPC ─────────────────────────────────────────────────────
@@ -218,4 +261,10 @@ resource "google_compute_instance" "lab_host" {
 
   deletion_protection       = false
   allow_stopping_for_update = true
+
+  # Ensure the cache bucket + IAM are ready before the VM boots and
+  # the startup script tries to `gsutil ls`.
+  depends_on = [
+    google_storage_bucket_iam_member.image_cache_sa,
+  ]
 }

@@ -9,6 +9,15 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+# Saved terraform plans — contain sensitive rendered values (API keys,
+# passwords) via startup_script_rendered, so never commit.
+tfplan
+*.tfplan
+
+# ── Environment / secrets ────────────────────────────────────
+# DD_API_KEY etc. — loaded at apply time via `TF_VAR_dd_api_key`.
+.env
+.env.*
 
 # ── SSH keys ─────────────────────────────────────────────────
 *.pem

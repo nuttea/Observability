@@ -61,6 +61,33 @@ variable "lab_name" {
   default     = "ddlab-ndm"
 }
 
+# ── Image cache bucket ───────────────────────────────────────
+# GCS bucket that persists the licensed CSR1000v qcow2 AND the
+# pre-built vrnetlab Docker image tarball across `terraform destroy`
+# cycles. Without this, every fresh apply requires re-uploading the
+# ~1.4 GB qcow2 and rebuilding the image (~10 min).
+#
+# First-time setup flow:
+#   1. terraform apply                  → creates bucket + VM
+#   2. gsutil cp <csr.qcow2> gs://<bucket>/csr1000v.qcow2   (once)
+#   3. gcloud compute instances reset <lab_name>
+#   4. Wait ~15 min — startup script builds the image, caches it
+#      back to the bucket, and deploys the lab automatically.
+#
+# On subsequent `terraform destroy && terraform apply`, the cache
+# hit in step (1) skips the qcow2 step entirely; deploy in ~10 min.
+variable "image_cache_bucket_name" {
+  description = "GCS bucket name for CSR1000v qcow2 + built image cache. If empty, defaults to <project>-<lab_name>-cache."
+  type        = string
+  default     = ""
+}
+
+variable "image_cache_force_destroy" {
+  description = "If true, terraform destroy will also delete cached objects in the image bucket. Keep false to preserve the cache across destroys (the common case)."
+  type        = bool
+  default     = false
+}
+
 variable "team_label" {
   description = "GCP label value for the 'team' key"
   type        = string
@@ -68,16 +95,29 @@ variable "team_label" {
 }
 
 # ── Datadog ──────────────────────────────────────────────────
+# dd_api_key has no default — Terraform will prompt interactively if not set
+# in terraform.tfvars or via TF_VAR_dd_api_key / -var="dd_api_key=..."
 variable "dd_api_key" {
   description = "Datadog API Key (from https://app.datadoghq.com/organization-settings/api-keys)"
   type        = string
   sensitive   = true
+
+  validation {
+    condition     = length(var.dd_api_key) > 0
+    error_message = "dd_api_key must not be empty. Get one from https://app.<dd_site>/organization-settings/api-keys."
+  }
 }
 
+# dd_site has no default — Terraform will prompt interactively if not set.
+# Allowed values: datadoghq.com, us3.datadoghq.com, us5.datadoghq.com
 variable "dd_site" {
-  description = "Datadog site (datadoghq.com, datadoghq.eu, us3.datadoghq.com, ap1.datadoghq.com)"
+  description = "Datadog site. Allowed: datadoghq.com (US1), us3.datadoghq.com (US3), us5.datadoghq.com (US5)"
   type        = string
-  default     = "datadoghq.com"
+
+  validation {
+    condition     = contains(["datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com"], var.dd_site)
+    error_message = "dd_site must be one of: datadoghq.com, us3.datadoghq.com, us5.datadoghq.com."
+  }
 }
 
 variable "dd_namespace" {
@@ -94,25 +134,52 @@ variable "lab_mgmt_subnet" {
 }
 
 variable "csr_mgmt_ip" {
-  description = "Cisco CSR management IP"
+  description = "Cisco CSR1 management IP (Bangkok DC1 Edge)"
   type        = string
   default     = "172.20.20.10"
 }
 
+variable "csr2_mgmt_ip" {
+  description = "Cisco CSR2 management IP (WAN Transit)"
+  type        = string
+  default     = "172.20.20.11"
+}
+
+variable "csr3_mgmt_ip" {
+  description = "Cisco CSR3 management IP (Chiang Mai DC2 Edge)"
+  type        = string
+  default     = "172.20.20.12"
+}
+
+variable "csr4_mgmt_ip" {
+  description = "Cisco CSR4 management IP (Chiang Mai DC2 Access — 4th hop)"
+  type        = string
+  default     = "172.20.20.14"
+}
+
+variable "csr5_mgmt_ip" {
+  description = "Cisco CSR5 management IP (Chiang Mai DC2 Endpoint — 5th hop)"
+  type        = string
+  default     = "172.20.20.15"
+}
+
+# ── Deprecated (kept to avoid breaking existing tfvars) ──
+# PAN and F5 removed from topology — variables retained only so older
+# terraform.tfvars files keep working. Not referenced by the lab.
 variable "pan_mgmt_ip" {
-  description = "Palo Alto PA-VM management IP"
+  description = "[DEPRECATED — unused] Palo Alto PA-VM management IP"
   type        = string
   default     = "172.20.20.20"
 }
 
 variable "f5_active_mgmt_ip" {
-  description = "F5 BIG-IP Active management IP"
+  description = "[DEPRECATED — unused] F5 BIG-IP Active management IP"
   type        = string
   default     = "172.20.20.31"
 }
 
 variable "f5_standby_mgmt_ip" {
-  description = "F5 BIG-IP Standby management IP"
+  description = "[DEPRECATED — unused] F5 BIG-IP Standby management IP"
   type        = string
   default     = "172.20.20.32"
 }

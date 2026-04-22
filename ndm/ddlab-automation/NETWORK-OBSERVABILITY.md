@@ -6,6 +6,36 @@ All simulation scripts are located at `/opt/ddlab/scripts/` on the GCE VM.
 
 ---
 
+> ## Lab topology (current)
+>
+> The lab now runs **5 Cisco CSR1000v** routers in an iBGP chain (Cisco-only —
+> F5 / PA-VM were removed). Loopback IPs and the data-plane link between the
+> agent and CSR1 were renumbered since the earlier drafts of this playbook:
+>
+> | Role | Router | Mgmt IP | Loopback |
+> |---|---|---|---|
+> | Hop 1 | `csr1-bkk-edge` | 172.20.20.10 | 10.100.1.1 |
+> | Hop 2 | `csr2-wan-transit` | 172.20.20.11 | 10.100.2.1 |
+> | Hop 3 | `csr3-cnx-edge` | 172.20.20.12 | 10.100.3.1 |
+> | Hop 4 | `csr4-cnx-access` | 172.20.20.14 | 10.100.4.1 |
+> | Hop 5 | `csr5-cnx-endpoint` | 172.20.20.15 | 10.100.5.1 |
+>
+> - Agent data-plane: **`dd-agent eth2 = 10.99.0.2/30`** ↔ **`CSR1 Gi4 = 10.99.0.1/30`**
+>   (the addresses were reversed in earlier versions of this doc — addresses in
+>   the scenarios below reflect the current config).
+> - iBGP inter-router subnets: `10.0.12.0/30` (CSR1↔CSR2), `10.0.23.0/30` (CSR2↔CSR3),
+>   `10.0.34.0/30` (CSR3↔CSR4), `10.0.45.0/30` (CSR4↔CSR5).
+> - For the SNMP check, all 5 CSRs use the Datadog **Python** `cisco-csr1000v`
+>   profile loaded via the **core** loader — see `TROUBLESHOOTING.md`.
+>
+> **New: load-test script** — `/opt/ddlab/scripts/loadtest.sh` generates traffic
+> that exceeds the CSR1000v ~100 Kbps unlicensed data-plane throttle and posts
+> start/end events to Datadog so the test window annotates NetworkPath graphs.
+> See the main [README.md](README.md#load-testing) for modes (steady / trickle /
+> burst / flood / overload).
+
+---
+
 ## Quick Reference
 
 | Script | Purpose |
@@ -38,16 +68,18 @@ A WAN transit router (CSR2) develops high latency, causing Datadog Network Path 
 The script uses Linux `tc netem` (traffic control / network emulation) to inject delay on CSR2's data-plane interfaces (`eth1` and `eth2` inside the container's network namespace). These map to CSR2's GigabitEthernet2 and GigabitEthernet3, which carry traffic between CSR1 and CSR3.
 
 ```
-DD Agent (10.99.0.1)
+DD Agent (eth2 = 10.99.0.2)
     │
     ▼ TTL=1 → ICMP Time Exceeded
-    CSR1 Gi4 (10.99.0.2)          ← ~1ms (normal)
+    CSR1 Gi4 (10.99.0.1)          ← ~1ms (normal)
     │
     ▼ TTL=2 → ICMP Time Exceeded
     CSR2 Gi2 (10.0.12.2)          ← 🔴 200ms+ (latency injected here)
     │
     ▼ TTL=3 → destination reached
     CSR3 Lo0 (10.100.3.1)         ← ~200ms+ (cumulative)
+    │
+    ▼ ... (TTL=4 → CSR4 Lo0 10.100.4.1, TTL=5 → CSR5 Lo0 10.100.5.1)
 ```
 
 ### Simulate

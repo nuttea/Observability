@@ -1,609 +1,469 @@
-# Datadog NDM + Network Path — Containerlab Lab Automation
+# Datadog NDM + NetworkPath — Containerlab Lab Automation
 
-Terraform + bootstrap scripts to spin up a fully automated [Datadog Network Device Monitoring](https://docs.datadoghq.com/network_monitoring/devices/) lab on Google Cloud.
+Terraform + bootstrap scripts that spin up a fully automated [Datadog Network Device Monitoring](https://docs.datadoghq.com/network_monitoring/devices/) lab on Google Cloud. The lab runs inside a single GCE VM using [Containerlab](https://containerlab.dev/) + [vrnetlab](https://github.com/srl-labs/vrnetlab) to emulate five real Cisco CSR1000v routers, and demonstrates:
 
-The lab runs inside a single GCE VM using [Containerlab](https://containerlab.dev/) + [vrnetlab](https://github.com/srl-labs/vrnetlab) to emulate real network devices, and demonstrates:
+- **NDM / SNMP polling** of 5 Cisco CSR1000v routers (`cisco-csr1000v` profile)
+- **NetworkPath** — true data-plane multi-hop traceroute, **up to 5 router hops**
+- **iBGP chain** over the 5 routers with an FRR eBGP peer simulating the Internet
+- **Friendly display names** in the Datadog UI (`csr1-bkk-edge`, `csr5-cnx-endpoint`, etc.) via `/etc/hosts` + `destination_service`
+- **Load-test script** (`loadtest.sh`) to exercise the CSR1000v's unlicensed ~100 Kbps data-plane throttle — generates measurable loss + latency that shows up in NetworkPath graphs
+- **Datadog events** automatically posted around each load-test run so they appear as annotations on NetworkPath timelines
 
-- **SNMP polling** of Cisco CSR, F5 BIG-IP, Palo Alto PA-VM
-- **Network Path monitoring** (multi-hop traceroute: BKK → WAN → CNX)
-- **BGP topology** (iBGP chain with FRR peer)
-- **SNMP traps** (linkUp/Down, BGP state changes)
-- **Geomap** (Thailand: Bangkok DC1 + Chiang Mai DC2)
-- **Log collection** (container stdout, SNMP trap logs)
+Any site is supported: `datadoghq.com` (US1), `us3.datadoghq.com`, `us5.datadoghq.com`. The API key is loaded from a local `.env` file; `dd_site` is validated by Terraform to reject other values.
 
 ---
 
 ## Architecture
 
-### GCP Infrastructure
+### GCP infrastructure
 
-```mermaid
-graph TB
-    subgraph GCP["GCP Project — asia-southeast1"]
-        subgraph VPC["VPC: ddlab-ndm-vpc (10.100.0.0/24)"]
-            subgraph Subnet["Subnet — Private Google Access ON"]
-                GCE["🖥️ GCE n2-standard-8\nddlab-ndm\nDebian 12, 200GB SSD\nNested KVM enabled"]
-            end
-            FW1["🔒 Firewall: allow-iap-ssh\nSource: 35.235.240.0/20 → :22"]
-            FW2["🔒 Firewall: allow-internal\nSource: 10.100.0.0/24 → all"]
-            FW3["🔒 Firewall: allow-egress-https\n→ 0.0.0.0/0 :443"]
-            FW4["🔒 Firewall: allow-egress-http\n→ 0.0.0.0/0 :80"]
-        end
-        Router["🌐 Cloud Router\nddlab-ndm-router"]
-        NAT["🔄 Cloud NAT\nddlab-ndm-nat\nAUTO_ONLY IPs"]
-    end
-
-    IAP["Google IAP\n35.235.240.0/20"]
-    Internet["🌍 Internet\n(Datadog, Docker Hub,\napt repos, GCS)"]
-    Dev["💻 Developer\ngcloud CLI + IAP"]
-
-    Dev -->|"gcloud compute ssh\n--tunnel-through-iap"| IAP
-    IAP -->|"TCP :22 via IAP proxy"| FW1
-    FW1 --> GCE
-    GCE --> FW3 --> NAT --> Internet
-    GCE --> FW4 --> NAT
-    Router --> NAT
-
-    style GCP fill:#e8f4f8,stroke:#1a73e8
-    style VPC fill:#d2e9f7,stroke:#1a73e8
-    style Subnet fill:#c5e1f5,stroke:#1a73e8
-    style NAT fill:#34a853,color:#fff
-    style IAP fill:#fbbc04,color:#000
+```
+┌────────────────────────────────────────────────────┐
+│  GCP Project — asia-southeast1                     │
+│  ┌──────────────────────────────────────────────┐  │
+│  │  VPC: ddlab-ndm-vpc  (10.100.0.0/24)         │  │
+│  │  ┌────────────────────────────────────────┐  │  │
+│  │  │  GCE VM: ddlab-ndm                     │  │  │
+│  │  │  n2-standard-8  (8 vCPU / 32 GB RAM)   │  │  │
+│  │  │  Debian 12, 200 GB SSD, nested-KVM ON  │  │  │
+│  │  │                                        │  │  │
+│  │  │  ┌─────────────────────────────────┐   │  │  │
+│  │  │  │ Docker bridge 172.20.20.0/24    │   │  │  │
+│  │  │  │ Containerlab topology (below)   │   │  │  │
+│  │  │  └─────────────────────────────────┘   │  │  │
+│  │  └────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────┘  │
+│  Cloud Router → Cloud NAT (outbound only)          │
+│  IAP SSH tunnel (no public IP)                     │
+└────────────────────────────────────────────────────┘
 ```
 
-### Lab Network Topology (inside the GCE VM)
+### Lab topology inside the VM
 
-```mermaid
-graph LR
-    subgraph GCE["GCE VM — Containerlab (Docker bridge: 172.20.20.0/24)"]
-        Agent["🐕 Datadog Agent\n172.20.20.5\neth2: 10.99.0.1/30\nSNMP poller + trap rx\nNetwork Path"]
-
-        subgraph BKK["Bangkok DC1"]
-            FRR["🌐 FRR bgp-peer\n172.20.20.6\nAS 65001"]
-            CSR1["🔵 CSR1 BKK-Edge\n172.20.20.10\nAS 65000\nLo0: 10.100.1.1"]
-        end
-
-        subgraph WAN["WAN Transit"]
-            CSR2["🔵 CSR2 WAN-Core\n172.20.20.11\nAS 65000\nLo0: 10.100.2.1"]
-        end
-
-        subgraph CNX["Chiang Mai DC2"]
-            CSR3["🔵 CSR3 CNX-Edge\n172.20.20.12\nAS 65000\nLo0: 10.100.3.1"]
-            F5["⚖️ F5 BIG-IP Active\n172.20.20.31"]
-        end
-
-        DD_DD["📊 Datadog\napp.datadoghq.com"]
-    end
-
-    FRR <-->|"eBGP AS65001↔65000\n172.16.0.x"| CSR1
-    CSR1 <-->|"iBGP + data plane\n10.0.12.x"| CSR2
-    CSR2 <-->|"iBGP + data plane\n10.0.23.x"| CSR3
-    CSR3 <-->|"data plane\n10.0.34.x"| F5
-
-    Agent -->|"direct link\n10.99.0.x"| CSR1
-    Agent -->|"SNMP poll + trap\n:9162"| CSR1
-    Agent -->|"SNMP poll + trap\n:9162"| CSR2
-    Agent -->|"SNMP poll + trap\n:9162"| CSR3
-    Agent -->|"SNMP poll :161"| F5
-    Agent -->|"Network Path\ntraceroute"| CSR1
-
-    Agent -->|"HTTPS :443\nvia Cloud NAT"| DD_DD
-
-    style BKK fill:#fff3cd,stroke:#ffc107
-    style WAN fill:#e8f4f8,stroke:#17a2b8
-    style CNX fill:#d4edda,stroke:#28a745
+```
+                            ┌─ Agent mgmt  (172.20.20.5 / eth0)
+                            │
+dd-agent (Datadog Agent) ───┤
+                            │
+                            └─ Data-plane (10.99.0.2/30 / eth2)
+                                       │
+bgp-peer (FRR, 172.20.20.6)   ─ eBGP ─ CSR1    (172.20.20.10, Gi4 10.99.0.1)
+                                       │   Lo0 = 10.100.1.1
+                                       │ iBGP over 10.0.12.0/30 (Gi3 ↔ Gi2)
+                                       ▼
+                             CSR2      (172.20.20.11)
+                             Lo0 = 10.100.2.1
+                                       │ iBGP over 10.0.23.0/30 (Gi3 ↔ Gi2)
+                                       ▼
+                             CSR3      (172.20.20.12)
+                             Lo0 = 10.100.3.1
+                                       │ iBGP over 10.0.34.0/30 (Gi3 ↔ Gi2)
+                                       ▼
+                             CSR4      (172.20.20.14)
+                             Lo0 = 10.100.4.1
+                                       │ iBGP over 10.0.45.0/30 (Gi3 ↔ Gi2)
+                                       ▼
+                             CSR5      (172.20.20.15)
+                             Lo0 = 10.100.5.1
 ```
 
-### Network Path — Multi-Hop Traceroute
+- **eth2 on dd-agent is the key** — it's a direct data-plane veth to CSR1 Gi4 in the **global** routing table (bypassing vrnetlab's SLiRP-NAT'd `Mgmt-intf` VRF on Gi1). Without it, ICMP probes for the 10.100.X.1 loopbacks get NAT'd back to the mgmt bridge and never reach downstream routers.
+- **Static routes** on every CSR + iBGP work together as belt-and-suspenders so 5-hop paths converge quickly on a cold boot.
+- **RAM**: each CSR1000v VM is started with `env: RAM: "4096"` (4 GB) — 5 × 4 = 20 GB of QEMU, fits in 32 GB with headroom for Docker/OS/agent.
 
-```mermaid
-graph LR
-    A["🐕 DD Agent\n10.99.0.1"] -->|"TTL=1 → ICMP TLE\nfrom 10.0.0.2"| H1["Hop 1\nCSR1 Gi4\n10.0.0.2"]
-    H1 -->|"TTL=2 → ICMP TLE\nfrom 10.0.12.2"| H2["Hop 2\nCSR2 Gi2\n10.0.12.2"]
-    H2 -->|"TTL=3 → ICMP TLE\nfrom 10.0.23.2"| H3["Hop 3\nCSR3 Gi2\n10.0.23.2"]
-    H3 -->|"TTL=4 → destination"| D["🎯 CSR3 Lo0\n10.100.3.1"]
+### NetworkPath targets
 
-    style A fill:#632CA6,color:#fff
-    style D fill:#28a745,color:#fff
-```
+The agent emits **8 NetworkPath traces**:
+
+| Display name (`hostname`) | `destination_service` | Expected hops | Protocol |
+|---|---|---|---|
+| `csr1-bkk-edge-mgmt` | `CSR1-BKK-EDGE (mgmt)` | 1 | TCP/22 |
+| `csr2-wan-transit-mgmt` | `CSR2-WAN-TRANSIT (mgmt)` | 1 | TCP/22 |
+| `csr3-cnx-edge-mgmt` | `CSR3-CNX-DC-EDGE (mgmt)` | 1 | TCP/22 |
+| `csr1-bkk-edge` | `CSR1-BKK-EDGE (loopback)` | 1 | ICMP |
+| `csr2-wan-transit` | `CSR2-WAN-TRANSIT (loopback)` | 2 | ICMP |
+| `csr3-cnx-edge` | `CSR3-CNX-DC-EDGE (loopback)` | 3 | ICMP |
+| `csr4-cnx-access` | `CSR4-CNX-ACCESS` | 4 | ICMP |
+| `csr5-cnx-endpoint` | `CSR5-CNX-ENDPOINT` | 5 | ICMP |
+
+The three `-mgmt` paths traverse only the Docker bridge (1 hop) and act as a reachability baseline. The five loopback paths traverse the CSR data-plane chain for real multi-hop observability.
 
 ---
 
 ## Prerequisites
 
-| Requirement | Notes |
-|---|---|
-| GCP account + project | N2 Intel machine type, nested virt enabled |
-| Terraform ≥ 1.5 | `brew install terraform` or [tfenv](https://github.com/tfutils/tfenv) |
-| Google Cloud SDK | `gcloud` CLI for IAP tunnel SSH |
-| IAP permission | `roles/iap.tunnelResourceAccessor` on the project |
-| Datadog account | API key from **Org Settings → API Keys** |
-| VM `.qcow2` images | Cisco CSR1000v, F5 BIG-IP VE (KVM), PAN-OS PA-VM — see [VM Images](#vm-images) |
-| GCS read access | `roles/storage.objectViewer` on `gs://cftd-th-gcs-fuse` (pre-staged images available) |
+1. GCP project with Compute + IAP APIs enabled
+2. Terraform ≥ 1.5 and `gcloud` CLI authenticated (`gcloud auth login` + `gcloud auth application-default login`)
+3. A valid licensed `csr1000v-universalk9.*.qcow2` image (e.g. `16.07.01-serial`) — required by vrnetlab to build the Cisco image
+4. Datadog API key (any US site), stored locally in `.env`
 
 ---
 
-## Quick Start
+## Quick start
 
-### 1. Configure credentials
+The lab auto-provisions a GCS bucket that caches the licensed Cisco CSR1000v qcow2 **and** the pre-built vrnetlab Docker image. After the one-time qcow2 upload, every subsequent `terraform destroy && terraform apply` cycle will re-create the VM and automatically deploy a fully working 5-CSR lab in ~10 minutes — no manual SSH required.
 
-Secrets should **never** be committed. Use environment variables:
-
-```bash
-export TF_VAR_dd_api_key="your-datadog-api-key"
-export TF_VAR_snmp_v3_auth_pass="YourSNMPAuthPass123!"
-export TF_VAR_snmp_v3_priv_pass="YourSNMPPrivPass123!"
-export TF_VAR_device_password="YourDeviceAdmin123!"
-
-# Optional: F5 BIG-IP VE trial key (enables LTM VIP to shopist.io)
-# If omitted, nginx reverse proxy is deployed instead
-# export TF_VAR_f5_license_key="XXXXX-XXXXX-XXXXX-XXXXX-XXXXXXX"
-```
-
-Non-secret values go in `terraform.tfvars` (already gitignored):
+### First-time setup (qcow2 not yet uploaded)
 
 ```bash
-cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-# Edit with your GCP project, region, SSH public key, image tags
-```
+cd ndm/ddlab-automation/terraform
 
-### 2. Deploy GCE infrastructure
+# 1. Write your Datadog API key to .env (git-ignored)
+cat > .env <<EOF
+DD_API_KEY=<your 32-char Datadog API key>
+EOF
 
-```bash
-cd terraform
+# 2. Copy + customise vars (GCP project, SSH key, device passwords)
+cp terraform.tfvars.example terraform.tfvars
+#    Edit: gcp_project, gcp_zone, gce_service_account, ssh_public_key,
+#    snmp/device passwords, dd_site.
+
+# 3. Apply — creates VPC + NAT + GCE VM + cache bucket
+set -a && source .env && set +a
+export TF_VAR_dd_api_key="$DD_API_KEY"
 terraform init
 terraform apply
+
+# 4. Upload the licensed qcow2 to the cache bucket (ONE TIME, ever)
+#    Terraform printed the exact command as `cold_start_upload_command`:
+gsutil cp <path-to-csr1000v-universalk9.16.07.01-serial.qcow2> \
+  gs://$(terraform output -raw image_cache_bucket)/csr1000v.qcow2
+
+# 5. Kick the VM so the startup script picks up the qcow2,
+#    builds the vrnetlab image, caches it back to the bucket,
+#    and auto-deploys the 5-CSR lab. `terraform output` already
+#    printed the exact commands as `cold_start_upload_command`,
+#    or extract the values yourself:
+PROJECT=$(terraform console <<<'var.gcp_project' | tr -d '"')
+ZONE=$(terraform output -raw instance_zone)
+NAME=$(terraform output -raw instance_name)
+
+gcloud compute instances reset "$NAME" --zone="$ZONE" --project="$PROJECT"
+
+# 6. Monitor — lab fully deployed ~15 min after reset (first-time) or
+#    ~10 min on subsequent applies (cached image, skips build)
+gcloud compute ssh "labuser@$NAME" --zone="$ZONE" --project="$PROJECT" \
+  --tunnel-through-iap \
+  -- 'tail -f /var/log/ddlab-deploy.log'
 ```
 
-Bootstrap runs automatically on first boot (~5 min to install Docker, Containerlab, vrnetlab, etc.).
-Follow the log: `terraform output -raw startup_log_tail | bash`
+After this first-time run, the bucket now contains:
 
-### 3. Connect via IAP tunnel
+```
+gs://<project>-<lab_name>-cache/csr1000v.qcow2                      ~ 850 MB
+gs://<project>-<lab_name>-cache/vrnetlab-cisco_csr1000v.tar.gz      ~ 1 GB
+```
+
+### Steady-state (re-run any time — fully automatic)
 
 ```bash
-# No public IP — all access is via Google IAP
-gcloud compute ssh labuser@ddlab-ndm \
-  --zone=asia-southeast1-a \
-  --project=YOUR_PROJECT \
-  --tunnel-through-iap
+cd ndm/ddlab-automation/terraform
+
+# Everything is remembered in the cache bucket — no qcow2 upload needed.
+set -a && source .env && set +a
+export TF_VAR_dd_api_key="$DD_API_KEY"
+terraform apply         # ~70 s to return (creates VM + bucket + IAM)
+# Startup script then:
+#   - detects cached image tarball in the bucket
+#   - docker loads it (~30 s)
+#   - pre-seeds the cisco-csr1000v SNMP profile
+#   - runs containerlab deploy (5 CSRs, ~7 min to CVAC-4-CONFIG_DONE)
+#   - configures eth2, MASQUERADE, /etc/hosts, validates
+# Total from `terraform apply` to healthy 5-CSR lab: ~12 min. Hands-off.
 ```
 
-Or use the output:
+**Measured timings** on `n2-standard-8` with a warm bucket cache (from the
+smoke-test runs during this lab's development):
 
-```bash
-terraform output -raw ssh_command | bash
-```
-
-### 4. Upload VM images
-
-**Option A — Pull from GCS bucket (fastest, images already staged):**
-
-```bash
-# SSH into the instance first
-gcloud compute ssh labuser@ddlab-ndm --zone=asia-southeast1-a \
-  --project=YOUR_PROJECT --tunnel-through-iap
-
-# Then inside the VM, pull from the pre-staged GCS bucket
-gsutil cp gs://cftd-th-gcs-fuse/ndm/csr1000v-universalk9.16.07.01-serial.qcow2 \
-  /opt/vrnetlab/cisco/csr1000v/
-
-gsutil cp gs://cftd-th-gcs-fuse/ndm/BIGIP-16.1.6.1-0.0.11.qcow2 \
-  /opt/vrnetlab/f5_bigip/
-
-gsutil cp gs://cftd-th-gcs-fuse/ndm/PA-VM-KVM-11.0.0.qcow2 \
-  /opt/vrnetlab/paloalto/pan/
-```
-
-**Option B — SCP your own licensed images via IAP:**
-
-```bash
-gcloud compute scp --tunnel-through-iap --zone=asia-southeast1-a \
-  csr1000v-universalk9.16.07.01-serial.qcow2 \
-  labuser@ddlab-ndm:/opt/vrnetlab/cisco/csr1000v/
-
-gcloud compute scp --tunnel-through-iap --zone=asia-southeast1-a \
-  BIGIP-16.1.6.1-0.0.11.qcow2 \
-  labuser@ddlab-ndm:/opt/vrnetlab/f5_bigip/
-
-gcloud compute scp --tunnel-through-iap --zone=asia-southeast1-a \
-  PA-VM-KVM-11.0.0.qcow2 \
-  labuser@ddlab-ndm:/opt/vrnetlab/paloalto/pan/
-```
-
-### 5. Build vrnetlab container images (~20–30 min)
-
-The `build-images.sh` script expects images in the correct vrnetlab source directories:
-
-```bash
-sudo bash /opt/ddlab/scripts/build-images.sh
-```
-
-> **Note:** If you see `[SKIP] No *.qcow2 found`, the build script may reference old paths.
-> Check `/opt/ddlab/scripts/build-images.sh` — directories should be
-> `cisco/csr1000v`, `f5_bigip`, `paloalto/pan`. Edit if needed.
-
-Verify builds succeeded:
-
-```bash
-sudo docker images | grep vrnetlab
-# Expected:
-# vrnetlab/cisco_csr1000v:16.07.01       ~2.4 GB
-# vrnetlab/f5_bigip-ve:16.1.6.1-0.0.11  ~9.7 GB
-# vrnetlab/paloalto_pa-vm:11.0.0         ~8.9 GB
-```
-
-### 6. Deploy Containerlab topology
-
-```bash
-# Add QEMU_CPU: host to PAN-OS node (required for PA-VM 11.x performance)
-sudo python3 -c "
-content = open('/opt/ddlab/containerlab/ndm-lab.clab.yml').read()
-old = '      mgmt-ipv4: 172.20.20.20'
-new = '      mgmt-ipv4: 172.20.20.20\n      env:\n        QEMU_CPU: host'
-if old in content and 'QEMU_CPU' not in content:
-    open('/opt/ddlab/containerlab/ndm-lab.clab.yml', 'w').write(content.replace(old, new))
-    print('Patched')
-"
-
-sudo containerlab deploy --topo /opt/ddlab/containerlab/ndm-lab.clab.yml
-```
-
-Wait for VMs to boot (CSR ~3 min, F5 ~5 min, PAN-OS ~10 min with `QEMU_CPU: host`):
-
-```bash
-# Monitor boot progress
-for c in csr csr2 csr3 bigip-active; do
-  echo "$c: $(sudo docker logs clab-ddlab-ndm-$c 2>&1 | grep 'Startup complete' | tail -1)"
-done
-```
-
-### 7. Post-deployment: configure network devices
-
-Once all VMs show `Startup complete`, run these configuration steps:
-
-**CSR routers** — configure SNMP and return routes via SSH:
-
-```bash
-SSH_OPTS="-o StrictHostKeyChecking=no -o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa -o Ciphers=+aes128-cbc,aes256-cbc"
-
-# CSR1 — SNMP + BGP (startup config auto-applies on boot; just save)
-sshpass -p "admin" ssh $SSH_OPTS admin@172.20.20.10 "wr mem" 2>/dev/null
-
-# CSR2 — add return route so SNMP trap responses reach dd-agent
-sshpass -p "admin" ssh $SSH_OPTS admin@172.20.20.11 << 'EOF'
-configure terminal
-ip route 10.99.0.0 255.255.255.252 10.0.12.1
-end
-wr mem
-EOF
-
-# CSR3 — add return route
-sshpass -p "admin" ssh $SSH_OPTS admin@172.20.20.12 << 'EOF'
-configure terminal
-ip route 10.99.0.0 255.255.255.252 10.0.23.1
-end
-wr mem
-EOF
-```
-
-**F5 BIG-IP** — SNMP is configured automatically by `configure-devices.sh`.
-
-**F5 LTM (optional)** — requires a license key. If `f5_license_key` is set in `terraform.tfvars`, the bootstrap script licenses the F5 and creates:
-- VIP `192.168.30.100:80` forwarding to `https://shopist.io` (Datadog demo store)
-- Pool with round-robin load balancing across shopist.io CDN IPs
-- Server-SSL profile for TLS termination to the backend
-
-If no license key is provided, an **nginx reverse proxy** is deployed instead at `172.20.20.100:80` with the same shopist.io backend.
-
-```bash
-# To license F5 manually after deployment:
-export TF_VAR_f5_license_key="XXXXX-XXXXX-XXXXX-XXXXX-XXXXXXX"
-# Or set in terraform.tfvars:
-# f5_license_key = "XXXXX-XXXXX-XXXXX-XXXXX-XXXXXXX"
-```
-
-### 8. Post-deployment: configure the host Datadog agent
-
-Install and configure the Datadog agent directly on the GCE host (not in a container):
-
-```bash
-# Install agent
-DD_API_KEY="your-dd-api-key" DD_SITE="datadoghq.com" \
-  bash -c "$(curl -L https://install.datadoghq.com/scripts/install_script_agent7.sh)"
-
-# Configure namespace
-sudo tee -a /etc/datadog-agent/datadog.yaml > /dev/null << 'EOF'
-
-network_devices:
-  namespace: lab-th
-
-logs_config:
-  container_collect_all: true
-EOF
-
-# Copy SNMP + Network Path configs from the lab directory
-sudo cp /opt/ddlab/conf.d/snmp.d/instances.yaml \
-  /etc/datadog-agent/conf.d/snmp.d/instances.yaml
-sudo mkdir -p /etc/datadog-agent/conf.d/network_path.d
-sudo cp /opt/ddlab/conf.d/network_path.d/conf.yaml \
-  /etc/datadog-agent/conf.d/network_path.d/conf.yaml
-
-# Enable system-probe traceroute module (required for Network Path multi-hop)
-sudo tee /etc/datadog-agent/system-probe.yaml > /dev/null << 'EOF'
-system_probe_config:
-  enabled: true
-
-network_path:
-  enabled: true
-
-traceroute:
-  enabled: true
-EOF
-sudo chown dd-agent:dd-agent /etc/datadog-agent/system-probe.yaml
-sudo chmod 640 /etc/datadog-agent/system-probe.yaml
-
-# Enable system-probe service and restart
-sudo systemctl enable datadog-agent-sysprobe
-sudo systemctl start datadog-agent-sysprobe
-sudo systemctl restart datadog-agent
-
-# Verify
-sudo datadog-agent status 2>&1 | grep -E "API key|snmp:lab-th|network_path" | head -10
-```
-
-### 9. Post-deployment: configure network routing
-
-These routes enable the Datadog agent to reach the data plane IPs (for multi-hop Network Path):
-
-```bash
-# Host route: 10.0.0.0/8 via CSR1 management (for SNMP polls to CSR loopbacks)
-BRIDGE=$(ip route show 172.20.20.0/24 | awk '{print $3}')
-sudo ip route add 10.0.0.0/8 via 172.20.20.10 dev "$BRIDGE"
-
-# dd-agent container eth2: direct data plane link to CSR1 Gi4
-# (enables accurate multi-hop traceroute from 10.99.0.1 through CSR1→CSR2→CSR3)
-DDPID=$(sudo docker inspect clab-ddlab-ndm-dd-agent --format '{{.State.Pid}}')
-sudo nsenter -n -t "$DDPID" -- ip addr add 10.99.0.1/30 dev eth2
-sudo nsenter -n -t "$DDPID" -- ip route add 10.0.0.0/8 via 10.99.0.2 dev eth2
-
-# Verify multi-hop traceroute (should show 3 hops)
-sudo nsenter -n -t "$DDPID" -- traceroute -I -n -m 6 -w 2 10.100.3.1
-# Expected:
-#  1  10.99.0.2   (CSR1 Gi4)    ~1ms
-#  2  10.0.12.2   (CSR2 Gi2)    ~1ms
-#  3  10.100.3.1  (CSR3 Lo0)    ~2ms
-```
-
-> **After reboots:** The host route and dd-agent eth2 IP are not persistent. Re-run this step after a GCE restart or Containerlab redeploy.
-
-### 10. Validate
-
-```bash
-sudo datadog-agent status 2>&1 | grep -E "snmp:lab-th|network_path:|OK\]|ERROR\]" | head -20
-```
-
-Expected: all `snmp:lab-th:172.20.20.1x` and `network_path:` instances show `[OK]`.
-
----
-
-## Connecting to Datadog
-
-| Product | URL |
+| Step | Wall-clock time |
 |---|---|
-| NDM Devices | https://app.datadoghq.com/devices |
-| NDM Topology | https://app.datadoghq.com/devices/topology |
-| NDM Geomap | https://app.datadoghq.com/devices/geomap |
-| Network Path | https://app.datadoghq.com/network/path |
-| SNMP Trap Logs | https://app.datadoghq.com/logs?query=source:snmp-traps |
+| `terraform destroy` | ~95 s (VM + VPC torn down; bucket preserved by design) |
+| `terraform apply` | ~75 s (VM + bucket + IAM + firewalls; returns to prompt) |
+| Startup script → STAGE 13 → `deploy-lab.sh` kick-off | ~1-2 min |
+| `containerlab deploy` + 5 CSRs booting in parallel | ~7-8 min |
+| Post-deploy fixes (host route, /etc/hosts, profile verify) | < 10 s |
+| **Total destroy → apply → fully working lab** | **~12-13 min** |
 
----
-
-## Network Observability Demo
-
-See **[NETWORK-OBSERVABILITY.md](NETWORK-OBSERVABILITY.md)** for the full demo playbook covering:
-
-- **In-transit hop latency spike** — inject WAN latency on CSR2, visible in Network Path
-- **Device reachability / packet loss** — simulate lossy links
-- **BGP routing flapping** — cause eBGP/iBGP session flaps with SNMP traps
-- **Interface down (linkDown trap)** — shut/restore interfaces with SNMP trap generation
-- **Device CPU high** — spike router CPU utilization
-- **Device uptime / reboot detection** — monitor sysUpTime resets
-- **Packet drop counters** — interface error/discard counter increases
-- **Combined WAN degradation demo** — all faults at once
-
-Quick start on the GCE VM:
+### Tear down vs keep cache
 
 ```bash
-# Interactive menu with all scenarios
-sudo bash /opt/ddlab/scripts/simulate-network-faults.sh
-
-# Or run individual scripts directly:
-sudo bash /opt/ddlab/scripts/simulate-latency.sh on 200 50
-sudo bash /opt/ddlab/scripts/simulate-bgp-flap.sh
-sudo bash /opt/ddlab/scripts/simulate-latency.sh off
+# Normal destroy — keeps the cache bucket (RECOMMENDED)
+terraform destroy
 ```
 
----
+`terraform destroy` intentionally **fails on the `google_storage_bucket` resource**
+with:
 
-## Thailand Geomap Locations
+```
+Error: Error trying to delete bucket <project>-<lab_name>-cache
+       containing objects without `force_destroy` set to true
+```
 
-| Tag | Location | Lat | Lon | Devices |
-|---|---|---|---|---|
-| `bkk-dc1` | Bangkok DC1 | 13.7563 | 100.5018 | CSR1 Router, PA-VM Firewall |
-| `cnx-dc2` | Chiang Mai DC2 | 18.7883 | 98.9853 | F5 Active, F5 Standby |
+This is **by design** — it prevents the ~2 GB cached qcow2 + built image
+from being accidentally wiped. All OTHER resources (VM, VPC, NAT, firewalls,
+IAM binding) are destroyed successfully before the bucket error. Your next
+`terraform apply` recreates the VM + bucket IAM, and the startup script
+reuses the cached image.
 
-After `deploy-lab.sh`, add coordinate mappings in:  
-**Datadog → NDM → Settings → Geomap → + Add Mapping**
-
-Or import the CSV:
 ```bash
-# Path on the VM
-cat /opt/ddlab/geomap-locations.csv
+# Full wipe, including cache (next apply will require re-uploading the qcow2)
+terraform destroy -var image_cache_force_destroy=true
 ```
+
+### What `terraform apply` → startup script does
+
+```
+STAGE 13 (auto-provision):
+  ┌───────────────────────────────────────────────────────────────┐
+  │ (a) gs://<bucket>/vrnetlab-cisco_csr1000v.tar.gz exists?      │
+  │     → gsutil cp + docker load  (~30 s)   ← normal case         │
+  │                                                                │
+  │ (b) gs://<bucket>/csr1000v.qcow2 exists?                       │
+  │     → download + build vrnetlab image (~10 min)                │
+  │     → docker save + upload .tar.gz back to cache               │
+  │                                                                │
+  │ (c) neither → log upload instructions + stop                   │
+  │     (first-time only; a `gcloud compute instances reset`       │
+  │      after `gsutil cp` resumes from here)                      │
+  └───────────────────────────────────────────────────────────────┘
+
+If (a) or (b) succeeds, STAGE 13 kicks `systemd-run --unit=ddlab-deploy`
+which runs /opt/ddlab/scripts/deploy-lab.sh in the background:
+
+  1. install-csr1000v-profile.sh       ← pre-deploy; seeds user profile
+                                          dir BEFORE the agent starts so
+                                          the core SNMP loader has the
+                                          profile cached on first init —
+                                          avoids an agent restart that
+                                          would drop the clab eth2 veth
+  2. containerlab deploy               ← 5 CSRs + FRR + dd-agent + eth2
+  3. wait_for_boot (CVAC-4-CONFIG_DONE)
+  4. host route 10.0.0.0/8 via 172.20.20.5 + MASQUERADE on eth2
+  5. install-csr1000v-profile.sh       ← re-run as a safety net (SIGHUP
+                                          if the profile was already OK)
+  6. populate /etc/hosts in dd-agent   ← NetworkPath display names
+  7. validate.sh smoke test
+```
+
+### Verify in Datadog
+
+- **NDM devices** → `https://<site>/devices`, filter `device_namespace:lab-th` → 5 CSR1000v routers
+- **NetworkPath** → `https://<site>/network/path`, filter `path_type:data-plane` → 5 multi-hop paths with 1–5 hops each
+- **Topology Map** → `https://<site>/devices/topology` → CDP-discovered chain
 
 ---
 
-## Directory Structure
+## Terraform variables
 
-```
-ddlab-automation/
-├── .gitignore                   # Excludes terraform.tfvars, *.tfstate, *.qcow2
-├── README.md                    # This file
-├── NETWORK-OBSERVABILITY.md     # Demo playbook: fault simulation & monitoring guide
-├── terraform/
-│   ├── main.tf                  # VPC, Cloud NAT, IAP firewall, GCE instance
-│   ├── variables.tf             # All input variables with descriptions + validation
-│   ├── outputs.tf               # IAP SSH commands, NAT name, Datadog URLs
-│   ├── terraform.tfvars         # YOUR VALUES — gitignored, never commit
-│   └── terraform.tfvars.example # Template — safe to commit
-└── scripts/
-    └── startup.sh.tpl           # Bootstrap template rendered by Terraform
-```
+See `variables.tf` for the complete list. Key ones:
 
-On the deployed GCE instance, all lab files are under `/opt/ddlab/`:
-
-```
-/opt/ddlab/
-├── containerlab/
-│   └── ndm-lab.clab.yml         # Containerlab topology (3×CSR + F5 + Agent)
-├── configs/
-│   ├── csr-startup.cfg          # CSR1 IOS — SNMP, BGP, IAP trap routing
-│   ├── csr2-startup.cfg         # CSR2 IOS — iBGP, SNMP
-│   ├── csr3-startup.cfg         # CSR3 IOS — iBGP, SNMP, default route
-│   └── frr.conf                 # FRR bgp-peer — eBGP to CSR1 AS 65001
-├── conf.d/
-│   ├── snmp.d/
-│   │   ├── instances.yaml       # Per-device SNMP config with geo tags
-│   │   └── traps_db/
-│   │       └── cisco-ios-traps.json  # OID → trap name mappings
-│   └── network_path.d/
-│       └── conf.yaml            # Network Path targets (3-hop chain)
-├── datadog.yaml                 # Agent config (namespace, snmp_traps, logs)
-├── system-probe.yaml            # Traceroute module config
-├── geomap-locations.csv         # Bangkok + Chiang Mai for Datadog UI import
-└── scripts/
-    ├── build-images.sh               # Build vrnetlab containers from qcow2
-    ├── deploy-lab.sh                 # Deploy topology + configure devices
-    ├── configure-devices.sh          # SSH-configure SNMP/BGP on each device
-    ├── register-geomap.sh            # Tag devices with geo OIDs + print UI steps
-    ├── validate.sh                   # End-to-end lab health check
-    ├── teardown.sh                   # Destroy topology (keep VM images)
-    ├── simulate-network-faults.sh    # Interactive menu for all fault scenarios
-    ├── simulate-latency.sh           # WAN latency injection (tc netem)
-    ├── simulate-packet-loss.sh       # Packet loss injection
-    ├── simulate-bgp-flap.sh          # BGP session flapping
-    ├── simulate-interface-down.sh    # Interface down/up/flap
-    └── simulate-cpu-stress.sh        # Device CPU stress
-```
-
----
-
-## Security
-
-| Control | Implementation |
-|---|---|
-| **No public IP** | GCE instance has no `access_config`; internet via Cloud NAT |
-| **IAP-only SSH** | Firewall allows TCP:22 only from `35.235.240.0/20` (Google IAP) |
-| **Secrets management** | All sensitive vars use `sensitive = true`; set via env vars, not files |
-| **gitignore** | `terraform.tfvars`, `*.tfstate`, SSH keys, `.qcow2` images all excluded |
-| **Private Google Access** | Subnet has PGA enabled (GCS, Artifact Registry without public IP) |
-| **Block project SSH keys** | `block-project-ssh-keys = true` in instance metadata |
-
-> ⚠️ The startup script embeds credentials into the GCE metadata payload. Anyone with `compute.instances.get` can read it. For production, use Secret Manager and retrieve secrets at runtime.
-
----
-
-## Cost Estimate (asia-southeast1)
-
-| Resource | Cost | Notes |
+| Variable | Example | Notes |
 |---|---|---|
-| n2-standard-8 (running) | ~$0.39/hr | Stop between sessions to save cost |
-| n2-standard-8 (stopped) | $0/hr | No charge when stopped |
-| 200 GB pd-ssd | ~$34/mo | Persistent — survives stop/start |
-| Cloud NAT | ~$0.044/hr + data | Only when instance is running |
+| `dd_api_key` | sourced from `.env` via `TF_VAR_dd_api_key` | **Prompted interactively** if unset |
+| `dd_site` | `us3.datadoghq.com` | Validated — only `datadoghq.com`, `us3.datadoghq.com`, `us5.datadoghq.com` allowed |
+| `gcp_project` | `my-gcp-project` | Must have Compute + IAP APIs |
+| `gcp_zone` | `asia-southeast1-a` | Must support N2 Intel for nested KVM |
+| `machine_type` | `n2-standard-8` | 5-CSR lab needs ≥ 8 vCPU / 32 GB |
+| `csr_image_tag` | `vrnetlab/cisco_csr1000v:16.07.01` | Set to match the tag your `build-images.sh` produced |
+| `csr_mgmt_ip` … `csr5_mgmt_ip` | 172.20.20.10 – .15 | Defaults are fine |
+| `snmp_v3_user` / `snmp_v3_auth_pass` / `snmp_v3_priv_pass` | `dduser` / `LabAuth@2024!` / `LabPriv@2024!` | Used by the CSR startup-configs and the agent SNMPv3 config |
 
-**Tip:** Stop the instance between sessions:
+`pan_*` and `f5_*` variables remain for backward compatibility with older tfvars files but are **not used** — the topology is CSR-only now.
+
+---
+
+## Scripts (rendered into `/opt/ddlab/scripts/` on the VM)
+
+| Script | Purpose |
+|---|---|
+| `build-images.sh` | Build vrnetlab Cisco CSR1000v image from the uploaded qcow2, then auto-upload the built image tarball to the GCS cache bucket so future apply cycles skip the build (~10 min). |
+| `deploy-lab.sh` | **Idempotent end-to-end deploy.** Checks `docker ps` for running CSRs; if they're missing, cleans any stale clab state and runs `containerlab deploy`. Pre-seeds the SNMP profile before clab deploys the agent (no restart), waits for CSRs to boot, sets up host routes + MASQUERADE, populates `/etc/hosts`, runs validate. |
+| `install-csr1000v-profile.sh` | Copy the `cisco-csr1000v` SNMP profile + deps into the agent's user profile dir. Works **pre-deploy** (extracts from the agent image via a throwaway container — doesn't need the agent running) and **post-deploy** (extracts via `docker exec` on the running agent). Only does a `docker restart` if the agent is already cached with `"unknown profile"` errors; otherwise SIGHUP. |
+| `loadtest.sh` | hping3-based load generator (`steady` / `trickle` / `burst` / `flood` / `overload`) — see [Load testing](#load-testing). Posts start/end events to Datadog so each test window appears as an annotation on NetworkPath graphs. |
+| `validate.sh` | Smoke test: containers running, agent healthy, SNMP reachable on all 5 CSRs. |
+| `simulate-packet-loss.sh` | tc-netem packet loss on a router's transit interfaces. |
+| `simulate-cpu-stress.sh` | Spike CPU on a CSR's QEMU VM. |
+| `simulate-network-faults.sh` | Menu-driven fault injection wrapper around the simulate-* scripts. |
+
+---
+
+## Load testing
+
+The lab ships with a ready-to-run load generator that stresses the CSR1000v's unlicensed ~100 Kbps data-plane throttle, producing measurable loss + latency visible in NetworkPath dashboards.
+
 ```bash
-gcloud compute instances stop ddlab-ndm --zone=asia-southeast1-a
-gcloud compute instances start ddlab-ndm --zone=asia-southeast1-a
+sudo bash /opt/ddlab/scripts/loadtest.sh [target] [mode] [duration_secs]
+```
+
+### Targets
+
+`csr2` / `csr-wan-transit` (default), `csr3` / `csr-cnx-edge`, `csr4` / `csr-cnx-access`, `csr5` / `csr-cnx-endpoint`, or any IP.
+
+### Modes
+
+| Mode | Target rate | Bandwidth | vs 100 Kbps cap | What you'll see |
+|---|---|---|---|---|
+| `steady` | 100 pps × 100 B | ~80 Kbps | Under cap | Flat latency, 0% loss |
+| `trickle` | 150 pps × 100 B | ~150 Kbps | **1.5× over** | Sawtooth latency (2-9× baseline), 0% visible loss — classic brownout signature |
+| `burst` | 1 000 pps × 100 B | ~800 Kbps | **8× over** | Clear loss + latency spikes |
+| `flood` | hping3 `--flood` | host CPU bound | **100×+ over** | Heavy loss |
+| `overload` | 10 000 pps × 1 KB | ~80 Mbps | **800× over** | Near-total loss (>99%), long recovery |
+
+Every run posts a `LoadTest START` and `LoadTest END` Datadog event tagged `source:ddlab-ndm`, `test:loadtest`, `target:<target>`, `mode:<mode>` — they appear as annotations on NetworkPath graphs.
+
+### Demo sequence
+
+```bash
+# Green baseline
+sudo bash /opt/ddlab/scripts/loadtest.sh csr-wan-transit steady 120
+
+# Subtle brownout (most production-like)
+sudo bash /opt/ddlab/scripts/loadtest.sh csr-wan-transit trickle 120
+
+# Clear degradation
+sudo bash /opt/ddlab/scripts/loadtest.sh csr-wan-transit burst 90
+
+# Red alert
+sudo bash /opt/ddlab/scripts/loadtest.sh csr-wan-transit overload 60
+```
+
+### Long-running test in the background
+
+```bash
+sudo systemd-run --unit=ddlab-loadtest \
+  --description="Steady 30min" \
+  --property=StandardOutput=append:/var/log/ddlab-loadtest.log \
+  --property=StandardError=append:/var/log/ddlab-loadtest.log \
+  /bin/bash /opt/ddlab/scripts/loadtest.sh csr-wan-transit steady 1800
+
+# Monitor
+sudo tail -f /var/log/ddlab-loadtest.log
+sudo systemctl status ddlab-loadtest.service
+# Stop early
+sudo systemctl stop ddlab-loadtest.service
 ```
 
 ---
 
-## Teardown
+## SNMP profile handling
+
+The `cisco-csr1000v` profile (sysObjectID `1.3.6.1.4.1.9.1.1537`) ships with Datadog's **Python** SNMP integration but **not** with the core (Go) SNMP loader. This lab uses the **core loader** for stability (the Python loader hits `RuntimeError: There is no current event loop in thread 'Dummy-N'` when polling ≥4 instances concurrently on recent agent versions, silently dropping most polls).
+
+The bootstrap does two things to bridge the gap:
+
+1. **Pre-deploy seed** — `install-csr1000v-profile.sh` runs **before** `containerlab deploy` brings the agent up. It extracts `cisco-csr1000v.yaml` + transitive deps (`_base.yaml`, `_base_cisco.yaml`, `_cisco-generic.yaml`, `_cisco-metadata.yaml`, `_generic-*.yaml`, `_std-*.yaml`) from the Datadog agent image (via a throwaway container — doesn't require the agent to be running) into `/opt/ddlab/conf.d/snmp.d/profiles/`, which is bind-mounted into the agent as `/etc/datadog-agent/conf.d/snmp.d/profiles/`. When the agent container starts, the core SNMP loader finds and caches the profile on first init — **no restart, no eth2 dance**.
+
+2. **Post-deploy safety net** — the same script runs again after `containerlab deploy`. On a healthy agent it's a SIGHUP no-op; if for some reason the agent came up with stale profile state, the script detects `"unknown profile \"cisco-csr1000v\""` in `agent status` and `docker restart`s the agent (user will need a subsequent `containerlab destroy && deploy` to reattach `eth2` — this branch should never fire in normal operation).
+
+The SNMP `instances.yaml` then uses:
+
+```yaml
+loader: core
+profile: cisco-csr1000v
+```
+
+And the agent reports 5 instances with IDs like `snmp:lab-th:172.20.20.{10,11,12,14,15}:<hash>` — **all `[OK]` or `[WARNING]`** (WARNING is cosmetic: CSR1000v doesn't populate every OID the bundled profile walks).
+
+To re-apply manually (idempotent, safe to rerun any time):
 
 ```bash
-# Destroy lab topology only (keeps GCE instance + disk + images)
-gcloud compute ssh labuser@ddlab-ndm --tunnel-through-iap -- \
-  'sudo containerlab destroy --topo /opt/ddlab/containerlab/ndm-lab.clab.yml --cleanup'
-
-# Destroy GCE instance (disk is kept — auto_delete = false)
-cd terraform && terraform destroy
-
-# Manually delete the boot disk if no longer needed
-gcloud compute disks delete ddlab-ndm --zone=asia-southeast1-a
+sudo bash /opt/ddlab/scripts/install-csr1000v-profile.sh
 ```
-
----
-
-## VM Images
-
-### Pre-staged GCS Bucket
-
-The following images are pre-staged in a shared GCS bucket and can be pulled directly into the GCE VM without uploading from your laptop:
-
-| File | Device | Size | GCS Path |
-|---|---|---|---|
-| `csr1000v-universalk9.16.07.01-serial.qcow2` | Cisco CSR1000v 16.07.01 | ~844 MB | `gs://cftd-th-gcs-fuse/ndm/` |
-| `BIGIP-16.1.6.1-0.0.11.qcow2` | F5 BIG-IP VE 16.1.6.1 | ~6.1 GB | `gs://cftd-th-gcs-fuse/ndm/` |
-| `PA-VM-KVM-11.0.0.qcow2` | Palo Alto PA-VM 11.0.0 | ~3.8 GB | `gs://cftd-th-gcs-fuse/ndm/` |
-
-**Required IAM:** `roles/storage.objectViewer` on the bucket or project.
-
-```bash
-# List available images
-gsutil ls gs://cftd-th-gcs-fuse/ndm/
-
-# Pull all three in parallel (run inside the GCE VM)
-gsutil cp gs://cftd-th-gcs-fuse/ndm/csr1000v-universalk9.16.07.01-serial.qcow2 \
-  /opt/vrnetlab/cisco/csr1000v/ &
-gsutil cp gs://cftd-th-gcs-fuse/ndm/BIGIP-16.1.6.1-0.0.11.qcow2 \
-  /opt/vrnetlab/f5_bigip/ &
-gsutil cp gs://cftd-th-gcs-fuse/ndm/PA-VM-KVM-11.0.0.qcow2 \
-  /opt/vrnetlab/paloalto/pan/ &
-wait && echo "All images downloaded"
-```
-
-### Expected vrnetlab Build Output
-
-After running `build-images.sh`, these Docker images should exist:
-
-```
-vrnetlab/cisco_csr1000v:16.07.01       ~2.4 GB
-vrnetlab/f5_bigip-ve:16.1.6.1-0.0.11  ~9.7 GB
-vrnetlab/paloalto_pa-vm:11.0.0         ~8.9 GB
-```
-
-Verify with: `sudo docker images | grep vrnetlab`
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| IAP tunnel fails | Ensure `roles/iap.tunnelResourceAccessor` on your Google account |
-| Bootstrap stuck | `tail -f /var/log/ddlab-startup.log` via IAP SSH |
-| Containerlab not found after bootstrap | Bootstrap uses `apt.fury.io/netdevops` repo; if missing run: `sudo apt-get install -y containerlab` |
-| `build-images.sh` shows `[SKIP]` | Edit script — directories must be `cisco/csr1000v`, `f5_bigip`, `paloalto/pan` not `csr`/`pan` |
-| CSR SNMP timeout | Check `snmp-server community dd-snmp-ro RO ACL-SNMP` and ACL permits `172.20.20.0 0.0.0.255` |
-| F5 SNMP timeout | Re-run REST API config: `allowedAddresses` must include `172.20.20.0/24`; wait ~3 min for F5 to initialize |
-| No SNMP traps in Datadog | Traps route via `vrf clab-mgmt` — check `show snmp host` shows `172.20.20.5:9162`; check `ip route vrf clab-mgmt` has `172.20.20.0/24` |
-| Network Path all `[ERROR]` | system-probe not running — check `systemctl status datadog-agent-sysprobe`; verify `traceroute: enabled: true` in `system-probe.yaml` |
-| Network Path shows 1 hop | dd-agent eth2 IP lost after container restart — re-run Step 9 routing commands |
-| Network Path hops are `* * *` | CSR2/CSR3 return routes missing — re-add `ip route 10.99.0.0 255.255.255.252 <upstream>` |
-| PAN-OS stuck at `vm login:` | Set `QEMU_CPU: host` in the PAN-OS node's `env:` block in the topology file |
-| PAN-OS SNMP unreachable | PAN-OS uses QEMU user-mode networking (SLiRP) — SNMP UDP is unreliable through it; monitor via REST API instead |
-| F5 REST API returns 401 | Password is `LabAdmin@2024!` (set via vrnetlab `PASSWORD` env var); F5 may still be booting |
-| `gsutil cp` fails | Verify `roles/storage.objectViewer` on `gs://cftd-th-gcs-fuse`; run `gcloud auth application-default login` |
-| After GCE reboot: SNMP/NP broken | Re-run Steps 7–9 (device config + host route + eth2 IP are not persistent across reboots) |
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for a full operational playbook. A few quick ones:
+
+### Data-plane NetworkPath paths drop to 0–40% reachability
+
+Usually means `eth2` on the dd-agent container got wiped (happens if someone `docker restart`s the agent — containerlab veth pairs are tied to the initial `clab deploy`).
+
+```bash
+# Diagnose
+sudo docker exec clab-ddlab-ndm-dd-agent ip -br addr show eth2
+# "Device eth2 does not exist." → needs redeploy
+
+# Fix — just re-run deploy-lab.sh; it's idempotent and will detect no
+# CSRs running, clean stale state, redeploy, and re-pre-seed the profile
+sudo bash /opt/ddlab/scripts/deploy-lab.sh
+```
+
+### NDM shows fewer than 5 devices (rare — shouldn't happen with current scripts)
+
+The pre-seed strategy in `deploy-lab.sh` installs the SNMP profile BEFORE the agent container starts, so the core loader has it cached on first init. If you still see fewer than 5 devices:
+
+```bash
+# Diagnose
+sudo docker exec clab-ddlab-ndm-dd-agent agent status 2>&1 \
+  | grep -E "snmp:lab-th|unknown profile|var_binds"
+
+# Healthy output — 5 instances, IDs like:
+#   snmp:lab-th:172.20.20.{10,11,12,14,15}:<hash>  [OK]
+#   Last Successful Execution Date: <recent>
+
+# If you see "unknown profile cisco-csr1000v", re-install + restart:
+sudo bash /opt/ddlab/scripts/install-csr1000v-profile.sh
+
+# (If the install triggers an agent restart, eth2 is dropped — follow
+#  up with deploy-lab.sh to fix that)
+sudo bash /opt/ddlab/scripts/deploy-lab.sh
+```
+
+### Load test seems to fail before running
+
+`hping3` and friends are installed by a clab `exec:` hook on the agent, which only fires on `containerlab deploy`. After a `docker restart` they're gone. Quick reinstall:
+
+```bash
+sudo docker exec clab-ddlab-ndm-dd-agent bash -c \
+  "apt-get -qq update && apt-get -qq install -y hping3 traceroute iputils-ping curl snmp"
+```
+
+Or just re-run `deploy-lab.sh` — it does this automatically on every invocation.
+
+---
+
+## Destroy
+
+```bash
+cd ndm/ddlab-automation/terraform
+terraform destroy
+```
+
+This removes the GCE VM, VPC, NAT, firewalls, and IAM binding. By design, **`terraform destroy` intentionally errors on the image-cache bucket** if it contains objects:
+
+```
+Error: Error trying to delete bucket <project>-<lab_name>-cache
+       containing objects without `force_destroy` set to true
+```
+
+Everything else is destroyed first — only the bucket is left intact. This is a safety feature: the bucket's ~2 GB cached qcow2 + built vrnetlab image is expensive to rebuild, so `destroy` protects it by default. Next `terraform apply` recreates the VM/network and instantly reuses the cached image.
+
+If you really want to wipe the cache too (e.g. you rotated the qcow2 or want a completely fresh start):
+
+```bash
+terraform destroy -var image_cache_force_destroy=true
+```
+
+Datadog devices in `device_namespace:lab-th` will age out of the NDM inventory within ~24 h automatically.
+
+---
+
+## File layout
+
+```
+ndm/ddlab-automation/
+├── README.md                  ← you are here
+├── TROUBLESHOOTING.md         ← operational playbook
+├── NETWORK-OBSERVABILITY.md   ← product walkthrough & demo script
+├── scripts/
+│   └── startup.sh.tpl         ← Terraform templatefile(); renders all
+│                                 on-VM configs + scripts
+└── terraform/
+    ├── main.tf                ← GCP resources (VPC, NAT, GCE, FW)
+    ├── variables.tf           ← All tunables
+    ├── outputs.tf             ← SSH + Datadog UI URLs, Geomap metadata
+    ├── terraform.tfvars.example
+    └── .env                   ← DD_API_KEY (git-ignored)
+```

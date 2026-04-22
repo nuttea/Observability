@@ -45,9 +45,24 @@ output "nat_gateway" {
   value       = google_compute_router_nat.lab_nat.name
 }
 
+locals {
+  # US1 uses https://app.datadoghq.com; US3/US5 use https://<site>/ (no "app." prefix)
+  dd_app_url = var.dd_site == "datadoghq.com" ? "https://app.datadoghq.com" : "https://${var.dd_site}"
+}
+
 output "datadog_ndm_url" {
   description = "Direct link to NDM in Datadog"
-  value       = "https://app.${var.dd_site}/devices"
+  value       = "${local.dd_app_url}/devices"
+}
+
+output "datadog_network_path_url" {
+  description = "Direct link to Network Path in Datadog"
+  value       = "${local.dd_app_url}/network/path"
+}
+
+output "datadog_app_url" {
+  description = "Base Datadog app URL for this site"
+  value       = local.dd_app_url
 }
 
 output "geomap_locations" {
@@ -57,15 +72,52 @@ output "geomap_locations" {
       label     = var.geo_bkk_label
       latitude  = var.geo_bkk_lat
       longitude = var.geo_bkk_lon
-      devices   = ["csr-router", "pan-firewall"]
+      devices   = ["csr (CSR-BKK-EDGE, hop 1)"]
+    }
+    wan_transit = {
+      label     = "WAN Transit"
+      latitude  = "15.8700"
+      longitude = "100.9925"
+      devices   = ["csr2 (CSR-WAN-TRANSIT, hop 2)"]
     }
     chiang_mai = {
       label     = var.geo_cnx_label
       latitude  = var.geo_cnx_lat
       longitude = var.geo_cnx_lon
-      devices   = ["f5-bigip-active", "f5-bigip-standby"]
+      devices   = ["csr3 (CSR-CNX-DC-EDGE, hop 3)"]
     }
   }
+}
+
+# ── Image cache — tells the user how to feed the lab its qcow2 ──────────────
+
+output "image_cache_bucket" {
+  description = "GCS bucket caching the CSR1000v qcow2 + built vrnetlab image"
+  value       = google_storage_bucket.image_cache.name
+}
+
+output "cold_start_upload_command" {
+  description = "First-time setup: upload the licensed CSR1000v qcow2 to the cache bucket, then reset the VM"
+  value = <<-EOT
+    # ──────────────────────────────────────────────────────────────────
+    # ONE-TIME: upload your licensed CSR1000v qcow2 to the cache bucket
+    # ──────────────────────────────────────────────────────────────────
+    gsutil cp <path-to-csr1000v-universalk9.qcow2> \
+      gs://${google_storage_bucket.image_cache.name}/csr1000v.qcow2
+
+    # Then reset the VM so the startup script picks it up and
+    # auto-deploys the lab (~15 min):
+    gcloud compute instances reset ${var.lab_name} \
+      --zone=${var.gcp_zone} \
+      --project=${var.gcp_project}
+
+    # Monitor progress:
+    gcloud compute ssh labuser@${var.lab_name} \
+      --zone=${var.gcp_zone} \
+      --project=${var.gcp_project} \
+      --tunnel-through-iap \
+      --command='sudo tail -f /var/log/ddlab-deploy.log'
+  EOT
 }
 
 # ── Sensitive outputs — not shown in terraform output by default ──────────────
