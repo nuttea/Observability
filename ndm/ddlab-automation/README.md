@@ -13,6 +13,28 @@ Any site is supported: `datadoghq.com` (US1), `us3.datadoghq.com`, `us5.datadogh
 
 ---
 
+## Who this is for
+
+This repo is a **Datadog SE / Solutions Architect demo asset** for Network Observability conversations. Spin it up once, hook a Datadog org to it, and you have a self-contained, customer-safe sandbox where you can demonstrate every NDM + NetworkPath capability without touching any real network gear.
+
+Typical use cases:
+
+| Audience | Demo |
+|---|---|
+| Network engineering team evaluating NDM | "Plug in any router with SNMP and you'll see this view in 5 minutes" — show the 5-CSR fleet view, profile-driven metrics, BGP session table, interface stats. |
+| NetOps / SRE evaluating NetworkPath | "We can pinpoint *which hop* is slow." Run Scenario 1 (latency on CSR2) and the customer sees hop-2 RTT spike in real time. |
+| Procurement asking "what does this look like at scale?" | The lab uses the **same Datadog Agent + same SNMP profiles** that real production deployments use — point at this and at their fleet without changing anything. |
+| Pre-sales POVs (proof-of-value) | The whole stack is reproducible from a single `terraform apply`. Hand the repo to a prospect's net-eng team to extend with their own gear. |
+
+### Why a containerlab-based lab (vs. our hosted demo)
+
+- **Real Cisco IOS-XE** — vrnetlab boots the full CSR1000v IOS-XE QEMU VM, not a simulator. SNMP responses, BGP behavior, CDP neighbors, and traceroute time-exceeded handling are all genuine.
+- **Repeatable** — one `terraform apply`; no shared state with other SEs.
+- **Fault injection** — `tc netem` lets you reproduce latency, packet loss, BGP flap, link failure on demand. See [`NETWORK-OBSERVABILITY.md`](NETWORK-OBSERVABILITY.md) for the full demo playbook.
+- **Customer-safe** — runs entirely inside one GCE VM (no public IPs, IAP-tunnel SSH); the prospect can `terraform destroy` and the only thing left is a 2 GB GCS cache bucket for the next apply.
+
+---
+
 ## Architecture
 
 ### GCP infrastructure
@@ -87,6 +109,81 @@ The agent emits **8 NetworkPath traces**:
 | `csr5-cnx-endpoint` | `CSR5-CNX-ENDPOINT` | 5 | ICMP |
 
 The three `-mgmt` paths traverse only the Docker bridge (1 hop) and act as a reachability baseline. The five loopback paths traverse the CSR data-plane chain for real multi-hop observability.
+
+---
+
+## Key concepts (for SEs)
+
+This section explains the Datadog products this lab exercises so you can speak to the "why" in customer conversations.
+
+### Network Device Monitoring (NDM)
+
+NDM polls SNMP-capable network devices (routers, switches, firewalls, load balancers, wireless controllers, …) on a schedule and surfaces them in [`/devices`](https://docs.datadoghq.com/network_monitoring/devices/) as a fleet inventory with metrics, interface state, BGP peers, ACL hits, and more.
+
+The Datadog Agent's SNMP check resolves the device's `sysObjectID` against a [vendor profile](https://docs.datadoghq.com/network_monitoring/devices/profiles/) which declares which OIDs to walk and how to expose them as metrics, tags, and metadata. There are 200+ profiles bundled with the agent (Cisco, Arista, Juniper, F5, Palo Alto, Fortinet, Aruba, Meraki, …) and you can [author your own](https://docs.datadoghq.com/network_monitoring/devices/profile_format/) for niche devices.
+
+**Key docs:**
+
+- [NDM overview](https://docs.datadoghq.com/network_monitoring/devices/) — what it is + how it works
+- [Setup guide (Linux Agent)](https://docs.datadoghq.com/network_monitoring/devices/setup/) — agent install, snmp.d configs
+- [SNMP profiles index](https://docs.datadoghq.com/network_monitoring/devices/profiles/) — list of bundled profiles + sysObjectIDs
+- [Profile format](https://docs.datadoghq.com/network_monitoring/devices/profile_format/) — write/extend a profile
+- [Autodiscovery (subnet scanner)](https://docs.datadoghq.com/network_monitoring/devices/snmp_scanner/) — sweep a CIDR + auto-detect profiles
+- [SNMP Traps](https://docs.datadoghq.com/network_monitoring/devices/snmp_traps/) — receive linkUp/linkDown/BGP traps
+- [NetFlow](https://docs.datadoghq.com/network_monitoring/devices/netflow/) — flow-based traffic analysis
+- [Topology Map (CDP/LLDP)](https://docs.datadoghq.com/network_monitoring/devices/topology_map/) — auto-drawn adjacency view
+
+### NetworkPath
+
+[NetworkPath](https://docs.datadoghq.com/network_monitoring/network_path/) is hop-by-hop traceroute as a continuous metric. The agent runs `traceroute` (TCP, UDP, or ICMP) toward defined destinations on an interval; for each probe it records every hop's IP, RTT, and reachability. Datadog stores this as time-series so you can ask:
+
+- "What's the average RTT to hop 3 over the last 24 h?"
+- "Which path's reachability has dropped below 99%?"
+- "Did the path *change* (new hop appeared) at the same time latency spiked?"
+
+This is the answer to the "**which hop is slow?**" question that historically required ticketing the network team and waiting for a manual `traceroute` from a remote VPN-jumped box.
+
+**Key docs:**
+
+- [NetworkPath overview](https://docs.datadoghq.com/network_monitoring/network_path/) — concepts + use cases
+- [Setup](https://docs.datadoghq.com/network_monitoring/network_path/setup/) — agent config + system-probe requirements
+- [Using NetworkPath](https://docs.datadoghq.com/network_monitoring/network_path/using_network_path/) — UI walkthrough
+- [Cloud Network Monitoring](https://docs.datadoghq.com/network_monitoring/cloud_network_monitoring/) — adjacent product for cloud-native flow telemetry
+
+### How NDM and NetworkPath complement each other
+
+| Question the customer asks | Product that answers it |
+|---|---|
+| "Is **the device** healthy?" (CPU, memory, fan, interface counters, BGP state) | **NDM** — SNMP polling on a per-device basis |
+| "Is **the path** through these devices healthy?" (RTT, loss, hop changes) | **NetworkPath** — traceroute-as-metric, agent-side |
+| "Is **the link** between two specific devices saturated?" | **NDM** interface throughput counters + **NetFlow** for top-talkers |
+| "Did **routing converge** correctly after that change?" | **NDM** BGP table snapshots + Topology Map + **NetworkPath** path-change events |
+
+Both products send to the same Datadog backend, share tags (`env`, `service`, `team`, `device_namespace`), and can be cross-referenced in a single dashboard.
+
+### SNMP loaders — `core` vs `python` (gotcha)
+
+The Datadog Agent ships **two** SNMP collection loaders:
+
+- **`loader: python`** — the original integration (Python, pysnmp). Bundles the full set of vendor profiles in `embedded/lib/.../snmp/data/default_profiles/`.
+- **`loader: core`** — the newer Go-based loader, much faster + lower memory, used by [SNMP autodiscovery](https://docs.datadoghq.com/network_monitoring/devices/snmp_scanner/) by default. Has a smaller compiled-in profile set.
+
+This lab uses **`loader: core` + an explicit `profile: cisco-csr1000v`** because:
+
+- The Python loader has a known bug on agent 7.78+: `RuntimeError: There is no current event loop in thread 'Dummy-N'` when polling 4+ instances concurrently. Drops the 4th+ poll silently.
+- The core loader is rock-solid but doesn't ship `cisco-csr1000v.yaml`. Solution: copy the bundled profile from the Python integration's data dir into `/etc/datadog-agent/conf.d/snmp.d/profiles/` (a [user profile dir](https://docs.datadoghq.com/network_monitoring/devices/profile_format/?tab=customprofiles) the core loader reads). Done automatically by `install-csr1000v-profile.sh`.
+
+If you're doing a discovery call and a customer asks "should we use core or python loader?", the right answer in 2026 is:
+
+> "Core for new deployments — it's faster, scales further, and is the only loader that supports modern features like NetFlow integration and SNMP traps autodiscovery. The bundled profile set covers ~95% of what we see in the field; for the remaining 5% (or anything custom), drop a YAML file in the user profile dir and the core loader picks it up."
+
+### True multi-hop NetworkPath inside a containerlab
+
+Most "demo NDM" environments only show single-hop reachability because all the simulated devices sit on the same Docker bridge (`172.20.20.0/24` here). Real customer networks have **multi-hop** paths — that's the whole point of NetworkPath. To make this lab reproduce that:
+
+- An extra **data-plane veth** is wired between `dd-agent:eth2` and `csr1:Gi4` on `10.99.0.0/30`. This sits in the CSR1's **global** routing table (not the SLiRP-NAT'd `Mgmt-intf` VRF that Gi1 uses).
+- The agent's `ip route 10.0.0.0/8 via 10.99.0.1 dev eth2` directs all data-plane probes through CSR1's Gi4 → CSR1 forwards via Gi3 → CSR2 → Gi3 → CSR3 → Gi3 → CSR4 → Gi3 → CSR5 (each loopback `10.100.X.1` is a one-hop-deeper destination).
+- This is the same pattern a customer would use for "NetworkPath through a private MPLS overlay" — the agent has a routed path into the data plane, not just management connectivity.
 
 ---
 
@@ -450,20 +547,231 @@ Datadog devices in `device_namespace:lab-th` will age out of the NDM inventory w
 
 ---
 
+## Integration snippets — lift these into your customer's environment
+
+Everything the lab installs is standard Datadog Agent config. The snippets below are simplified versions of what gets generated at `/opt/ddlab/conf.d/snmp.d/` and `/opt/ddlab/conf.d/network_path.d/` on the lab VM — you can lift them straight into a real customer Agent.
+
+### 1. SNMP — single device with explicit profile
+
+`/etc/datadog-agent/conf.d/snmp.d/conf.yaml`
+
+```yaml
+init_config:
+
+instances:
+  - ip_address: 10.10.20.5            # router mgmt IP
+    snmp_version: 3
+    user: dduser
+    authProtocol: SHA
+    authKey: <auth-pass>
+    privProtocol: AES
+    privKey: <priv-pass>
+    loader: core                       # see "Key concepts" — use core
+    profile: cisco-csr1000v             # explicit; skips autodetect
+    tags:
+      - "device_namespace:prod-network"
+      - "site:bkk-dc1"
+      - "team:netops"
+      - "tier:wan-edge"
+```
+
+[Reference: SNMP integration setup](https://docs.datadoghq.com/network_monitoring/devices/setup/?tab=linux)
+
+### 2. SNMP — autodiscovery sweep of a subnet
+
+`/etc/datadog-agent/datadog.yaml`
+
+```yaml
+network_devices:
+  namespace: prod-network               # appears as device_namespace tag
+  autodiscovery:
+    enabled: true
+    workers: 10
+    discovery_interval: 300             # seconds — re-scan every 5 min
+    use_deduplication: true
+    configs:
+      - network_address: 10.10.20.0/24
+        snmp_version: 3
+        user: dduser
+        authProtocol: SHA
+        authKey: <auth-pass>
+        privProtocol: AES
+        privKey: <priv-pass>
+```
+
+The agent issues `GetRequest sysObjectID.0` against every IP in the subnet, matches against bundled profiles, and starts polling automatically. Devices that don't respond (or whose sysObjectID doesn't match any profile) are ignored quietly.
+
+[Reference: SNMP autodiscovery / scanner](https://docs.datadoghq.com/network_monitoring/devices/snmp_scanner/)
+
+> **Note on this lab:** autodiscovery is intentionally **disabled** here in favor of static instances — the core loader's autodiscovery doesn't ship the cisco-csr1000v profile and would error. In production with whatever-vendor devices your customer runs, autodiscovery is usually the right starting point.
+
+### 3. NetworkPath — multi-hop traceroute target
+
+`/etc/datadog-agent/conf.d/network_path.d/conf.yaml`
+
+```yaml
+instances:
+  - hostname: csr5-cnx-endpoint         # display name in UI
+    protocol: ICMP                       # or TCP / UDP
+    source_service: dd-lab-agent         # appears in "Service" column
+    destination_service: CSR5 endpoint   # friendly destination label
+    tags:
+      - "path_name:agent-to-cnx-endpoint"
+      - "path_type:data-plane"
+      - "expected_hops:5"
+      - "team:netops"
+    max_ttl: 12
+    traceroute_queries: 3                # number of traceroutes per check run
+    min_collection_interval: 60          # seconds
+```
+
+[Reference: NetworkPath setup](https://docs.datadoghq.com/network_monitoring/network_path/setup/) — also covers the `system-probe.yaml` change required to enable traceroute (this lab does that automatically).
+
+### 4. SNMP traps receiver
+
+`/etc/datadog-agent/datadog.yaml`
+
+```yaml
+network_devices:
+  snmp_traps:
+    enabled: true
+    port: 162
+    bind_host: 0.0.0.0
+    community_strings:
+      - <ro-community>
+    users:                                # SNMPv3 trap users
+      - username: dduser
+        authKey: <auth-pass>
+        authProtocol: SHA
+        privKey: <priv-pass>
+        privProtocol: AES
+```
+
+Then on each device: `snmp-server host <agent-ip> version 3 priv dduser`. Datadog will index the traps as logs and surface them in the [SNMP Traps Explorer](https://docs.datadoghq.com/network_monitoring/devices/snmp_traps/).
+
+### 5. Custom SNMP profile (extending an existing one)
+
+`/etc/datadog-agent/conf.d/snmp.d/profiles/cisco-csr-bgp.yaml`
+
+```yaml
+extends:
+  - cisco-csr1000v.yaml      # picks up everything from the bundled profile
+
+metrics:
+  - MIB: BGP4-MIB
+    table:
+      name: bgpPeerTable
+      OID: 1.3.6.1.2.1.15.3
+    symbols:
+      - OID: 1.3.6.1.2.1.15.3.1.2
+        name: bgpPeerState
+    metric_tags:
+      - column:
+          OID: 1.3.6.1.2.1.15.3.1.7
+          name: bgpPeerRemoteAddr
+        tag: bgp_peer_remote
+```
+
+Ship this file, point `profile:` at it in `instances.yaml`, and the agent will start emitting `snmp.bgpPeerState` metrics tagged with each remote-peer IP.
+
+[Reference: profile format reference](https://docs.datadoghq.com/network_monitoring/devices/profile_format/)
+
+### 6. Useful saved metric queries
+
+```
+# Average device CPU per site
+avg:snmp.cpu.usage{device_namespace:lab-th} by {snmp_host,site}
+
+# All interfaces in error state
+sum:snmp.ifInErrors{device_namespace:lab-th} by {snmp_host,interface}.as_rate()
+
+# NetworkPath RTT to a specific destination, by hop
+avg:datadog.network_path.path.hop_rtt{path_name:agent-to-csr5-cnx-endpoint} by {hop_index,hop_ip_address}
+
+# Path reachability over time
+avg:datadog.network_path.path.reachable{path_type:data-plane} by {destination_service}
+
+# BGP peer state (1 = established, others = down)
+avg:snmp.cisco.bgpPeerState{device_namespace:lab-th} by {snmp_host,bgp_peer_remote}
+```
+
+### 7. Recommended monitor — NetworkPath hop latency
+
+[Datadog Terraform provider](https://registry.terraform.io/providers/DataDog/datadog/latest/docs/resources/monitor) snippet — drop into a customer's monitors-as-code repo:
+
+```hcl
+resource "datadog_monitor" "network_path_hop_rtt" {
+  name    = "[NetworkPath] Hop RTT degraded on {{path_name.name}}"
+  type    = "metric alert"
+  query   = "avg(last_5m):avg:datadog.network_path.path.hop_rtt{path_type:data-plane} by {path_name,hop_index} > 100"
+  message = <<-EOM
+    Hop {{hop_index.name}} on path {{path_name.name}} is averaging
+    {{value}} ms over the last 5 min.
+
+    @netops-oncall
+
+    Investigation:
+      - Open the path in NetworkPath: https://app.datadoghq.com/network/path
+      - Cross-reference the hop's device in NDM (filter on device_ip = hop's IP)
+      - Check device CPU / interface counters around the same window
+  EOM
+
+  monitor_thresholds {
+    warning  = 50
+    critical = 100
+  }
+
+  tags = ["team:netops", "service:network-path"]
+}
+```
+
+### 8. Posting Datadog events from a script (used by `loadtest.sh`)
+
+```bash
+curl -sS -X POST "https://api.${DD_SITE}/api/v1/events" \
+  -H "Content-Type: application/json" \
+  -H "DD-API-KEY: ${DD_API_KEY}" \
+  -d "{
+    \"title\": \"Maintenance window START — core1.bkk-dc1\",
+    \"text\":  \"Patching IOS-XE 17.06 → 17.09. Expect ~5 min loss on hop 2.\",
+    \"tags\":  [\"source:netops-runbook\", \"target:core1.bkk-dc1\", \"change_type:maintenance\"],
+    \"alert_type\": \"info\"
+  }"
+```
+
+[Reference: Events API](https://docs.datadoghq.com/api/latest/events/)
+
+These events render as flags on the timeline of every dashboard / NetworkPath graph that overlaps the window — invaluable for "did *we* cause this?" investigations.
+
+---
+
 ## File layout
 
 ```
 ndm/ddlab-automation/
-├── README.md                  ← you are here
-├── TROUBLESHOOTING.md         ← operational playbook
-├── NETWORK-OBSERVABILITY.md   ← product walkthrough & demo script
+├── README.md                  ← you are here — concepts, setup, integration snippets
+├── TROUBLESHOOTING.md         ← operational playbook (11 scenarios, diagnose + fix)
+├── NETWORK-OBSERVABILITY.md   ← Network Observability demo playbook
+│                                (latency, packet loss, BGP flap, link down, CPU
+│                                 stress) with monitor recipes + customer demo flow
 ├── scripts/
-│   └── startup.sh.tpl         ← Terraform templatefile(); renders all
-│                                 on-VM configs + scripts
+│   └── startup.sh.tpl         ← Terraform templatefile(); renders all on-VM
+│                                configs + scripts (~2 400 lines, single source
+│                                of truth — every change goes here)
 └── terraform/
-    ├── main.tf                ← GCP resources (VPC, NAT, GCE, FW)
-    ├── variables.tf           ← All tunables
-    ├── outputs.tf             ← SSH + Datadog UI URLs, Geomap metadata
-    ├── terraform.tfvars.example
-    └── .env                   ← DD_API_KEY (git-ignored)
+    ├── main.tf                ← GCP resources (VPC, NAT, GCE, FW, image-cache GCS)
+    ├── variables.tf           ← All tunables (Datadog site, SNMP creds, CSR mgmt
+    │                            IPs, image cache bucket name)
+    ├── outputs.tf             ← SSH + Datadog UI URLs, geomap metadata,
+    │                            cold-start qcow2 upload command
+    ├── terraform.tfvars.example   ← scrubbed example (no real secrets)
+    ├── terraform.tfvars       ← your customised vars (.gitignored)
+    └── .env                   ← DD_API_KEY only (.gitignored)
 ```
+
+### Reading order for a new SE
+
+1. **`README.md`** (this file) — what the lab is, how to bring it up, what concepts it demonstrates, copy-pastable integration snippets.
+2. **`NETWORK-OBSERVABILITY.md`** — the customer-facing demo playbook. Run through scenarios 1-5 once on your own org before doing it live.
+3. **`TROUBLESHOOTING.md`** — keep open in a side tab during demos. The first 6 scenarios cover the operational gotchas you might hit.
+4. **`scripts/startup.sh.tpl`** — only when you want to extend the lab (add a vendor, add a scenario, tweak the topology).

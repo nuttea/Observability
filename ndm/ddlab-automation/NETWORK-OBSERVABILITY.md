@@ -1,8 +1,55 @@
 # Network Observability — Demo Playbook
 
-This document covers the **Network Observability** scenarios available in the DDLab environment, how to simulate each one, what to observe in Datadog, and recommended monitor configurations.
+This document is the **customer-facing demo playbook** for the DDLab environment. Use it as a script when running Network Observability demos for prospects: each scenario has a stated business problem, the simulation command, what the customer should look at in the Datadog UI, and a recommended monitor template.
 
-All simulation scripts are located at `/opt/ddlab/scripts/` on the GCE VM.
+For the lab's setup, architecture, and integration snippets, see [`README.md`](README.md). For operational gotchas, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+
+All simulation scripts are at `/opt/ddlab/scripts/` on the GCE VM.
+
+---
+
+## Why Datadog Network Observability
+
+Most network teams have a stack like this in 2026:
+
+| Need | Legacy tool | Datadog |
+|---|---|---|
+| SNMP polling, MIB browsing | SolarWinds NPM, LibreNMS, Zabbix | **NDM** ([docs](https://docs.datadoghq.com/network_monitoring/devices/)) |
+| Hop-by-hop traceroute | manual `traceroute` from a jumphost, ThousandEyes | **NetworkPath** ([docs](https://docs.datadoghq.com/network_monitoring/network_path/)) |
+| Flow analysis | NetFlow Analyzer, Plixer Scrutinizer | **NetFlow** ([docs](https://docs.datadoghq.com/network_monitoring/devices/netflow/)) |
+| SNMP traps | trap receivers, syslog forwarders | **SNMP Traps** ([docs](https://docs.datadoghq.com/network_monitoring/devices/snmp_traps/)) |
+| Configuration drift / topology | rancid, Oxidized | **Topology Map** ([docs](https://docs.datadoghq.com/network_monitoring/devices/topology_map/)) + Cloud Network Monitoring |
+
+The point of Network Observability in Datadog is that **all of these signals live in one place** with the same tag model (`env`, `service`, `team`, `device_namespace`, `site`) and the same alerting + correlation primitives as APM, logs, and infrastructure metrics. When a customer asks "did this app slowdown coincide with a network issue?" the answer is one click away in a Datadog dashboard, not a war-room with three vendors.
+
+This lab demonstrates **NDM + NetworkPath** specifically. NetFlow, SNMP traps, and CDP/LLDP topology can also be enabled — they're already running in the agent (see `network_devices` block in [`/opt/ddlab/datadog.yaml`](#) on the VM) and just need devices to send to them.
+
+### How NDM works (in 5 lines)
+
+1. Datadog Agent reads `instances.yaml` listing devices to poll (or autodiscovers via subnet sweep).
+2. For each device, it issues a `GetRequest sysObjectID.0` and matches the result against a profile (`cisco-csr1000v.yaml` etc.) which declares which OIDs to walk.
+3. The agent walks those OIDs every `min_collection_interval` seconds (default 15s).
+4. Metrics + tags + metadata are sent to Datadog.
+5. UI renders them at [`/devices`](https://docs.datadoghq.com/network_monitoring/devices/) as a fleet inventory with per-device drill-downs.
+
+### How NetworkPath works (in 5 lines)
+
+1. Datadog Agent reads `network_path.d/conf.yaml` listing destinations.
+2. For each destination, the agent (via `system-probe`) runs N parallel traceroutes (TCP/UDP/ICMP).
+3. For every probe, it captures every hop's IP, RTT, and reachability.
+4. Hop metadata is enriched with reverse-DNS / NDM device match.
+5. The result is sent to the [`/network/path`](https://docs.datadoghq.com/network_monitoring/network_path/) view as continuous time-series — not just a snapshot.
+
+### What this lab proves
+
+| Demo question | The lab shows |
+|---|---|
+| "Can we see all our routers in one place?" | 5 CSR1000v's listed at `/devices`, filtered by `device_namespace:lab-th` |
+| "Can we see what's between us and an endpoint?" | NetworkPath chain `agent → CSR1 → CSR2 → CSR3 → CSR4 → CSR5` rendered hop-by-hop |
+| "Can we tell *which hop* is slow?" | [Scenario 1](#scenario-1--in-transit-hop-latency-spike-network-path) — inject 200 ms on CSR2 and watch hop 2 light up |
+| "Can we tell *which device* is dropping traffic?" | [Scenario 2](#scenario-2--device-reachability--ping-loss-network-path) — `tc netem loss 50%` on CSR2 |
+| "Can we alert when this happens?" | Each scenario has a `datadog_monitor` Terraform snippet you can copy |
+| "Can we correlate with the actual traffic load?" | [`README.md` § Load testing](README.md#load-testing) — overload CSR2 + watch NetworkPath simultaneously |
 
 ---
 
@@ -115,15 +162,47 @@ sudo bash /opt/ddlab/scripts/simulate-latency.sh on 2000 200
 
 ### Recommended Monitor
 
-**Network Path Hop Latency**
+**Network Path Hop Latency** — as Terraform:
+
+```hcl
+resource "datadog_monitor" "np_hop_rtt_high" {
+  name    = "[NetworkPath] Hop RTT > 100 ms on {{path_name.name}} hop {{hop_index.name}}"
+  type    = "metric alert"
+  query   = "avg(last_5m):avg:datadog.network_path.path.hop_rtt{path_type:data-plane} by {path_name,hop_index,hop_ip_address} > 100"
+  message = <<-EOM
+    Hop {{hop_index.name}} ({{hop_ip_address.name}}) on path {{path_name.name}}
+    averaged {{value}} ms over the last 5 minutes (threshold 100 ms).
+
+    @netops-oncall
+
+    Investigate:
+      - NetworkPath: https://app.datadoghq.com/network/path
+      - Cross-reference NDM device for {{hop_ip_address.name}}
+      - Datadog event timeline for change windows around this time
+  EOM
+
+  monitor_thresholds {
+    warning  = 50
+    critical = 100
+  }
+
+  tags = ["team:netops", "service:network-path", "scenario:hop-latency"]
+}
+```
+
+Or as a one-liner monitor query you can paste into the [Monitors UI](https://app.datadoghq.com/monitors/manage):
 
 ```
-Metric: datadog.network_path.path.hop_rtt
-Filter: path_name:agent-to-csr3-cnx-edge
-Alert: avg(last_5m) > 100ms  (Warning: > 50ms)
+avg(last_5m):avg:datadog.network_path.path.hop_rtt{path_type:data-plane} by {path_name,hop_index} > 100
 ```
 
-This monitors the round-trip time to each hop on the path. When CSR2's latency increases, the alert fires specifically for the affected hop.
+The grouping by `hop_index` is the magic — alerts fire **per affected hop**, not for the path as a whole. So a slow CSR2 lights up exactly one alert with a clear "hop 2" identifier instead of every downstream destination.
+
+### Datadog reference
+
+- [NetworkPath: Use Cases](https://docs.datadoghq.com/network_monitoring/network_path/using_network_path/) — UI walkthrough including hop-level drill-down
+- [Datadog metrics for NetworkPath](https://docs.datadoghq.com/network_monitoring/network_path/setup/?tab=docker#network-path-metrics) — full list of `datadog.network_path.*` metrics
+- [Tag-based monitor scoping](https://docs.datadoghq.com/monitors/configuration/?tab=thresholdalert#alert-grouping) — `by {hop_index}` syntax explained
 
 ---
 
@@ -584,3 +663,109 @@ The `tc netem` rules apply at the container network namespace level, meaning the
 | CPU stress doesn't raise SNMP metrics | The CSR VM may have its own CPU abstraction. Check `show processes cpu sorted` via SSH to confirm actual IOS CPU impact. |
 | Packet loss simulation removed after container restart | `tc netem` rules are ephemeral — they only live in the container's network namespace. Re-apply after any `docker restart` or `containerlab deploy`. |
 | `nsenter: failed to execute` | Ensure you're running as root (`sudo`) and the container PID is valid. |
+
+For broader operational issues see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+
+---
+
+## Customer demo flow
+
+Pre-flight checklist (run 5 min before the call):
+
+```bash
+# Confirm lab is healthy + on the customer's expected Datadog org
+gcloud compute ssh labuser@ddlab-ndm --zone=asia-southeast1-a \
+  --project=<your-proj> --tunnel-through-iap --command='
+sudo docker ps --format "{{.Names}}\t{{.Status}}" | grep clab-ddlab-ndm
+sudo docker exec clab-ddlab-ndm-dd-agent agent status 2>&1 \
+  | sed "s/\x1b\[[0-9;]*m//g" | grep -cE "snmp:.*\[(OK|WARNING)\]" \
+  | xargs -I N echo "SNMP OK: N of 5"
+sudo docker exec clab-ddlab-ndm-dd-agent agent status 2>&1 \
+  | sed "s/\x1b\[[0-9;]*m//g" | grep -c "network_path:.*\[OK\]" \
+  | xargs -I N echo "NetworkPath OK: N of 8"
+sudo bash /opt/ddlab/scripts/simulate-latency.sh off 2>/dev/null || true
+sudo bash /opt/ddlab/scripts/simulate-packet-loss.sh off csr2 2>/dev/null || true
+'
+```
+
+Open these tabs ahead of the call:
+
+1. NDM device list — filter `device_namespace:lab-th`
+2. Open CSR2 (`172.20.20.11`) device detail page
+3. NetworkPath — filter `path_type:data-plane`
+4. Open the path `agent-to-cnx-endpoint` (5-hop) detail view
+
+### 30-min demo agenda
+
+| Time | Section | What to do | What to say |
+|---|---|---|---|
+| 0:00 | Intro the topology (slide or whiteboard) | Show the BKK → Transit → CNX 5-CSR diagram from `README.md` | "This represents your prod WAN at small scale. Same agent, same SNMP profiles, same UI as you'd see in production." |
+| 0:05 | NDM fleet view | Tab 1 — point at the 5 device rows | "All polled via SNMPv3 every 15 s. CPU, mem, interface counters, BGP, CDP topology — all standard." |
+| 0:08 | NDM device drill-down | Tab 2 — click CSR2 → interfaces, BGP table | "Click any device, you get this view. Notice the dynamic device tags — `site`, `team`, `role` — these are tags YOU control via SNMP config." |
+| 0:12 | NetworkPath baseline | Tab 3 + 4 — show 5-hop path, all green ~1-3 ms | "This is the bit you don't get from SolarWinds. Every probe is recorded as time-series. We can chart hop-2 RTT over the last 30 days, alert when it changes, correlate with anything else in Datadog." |
+| 0:15 | **Demo Scenario 1** (latency) | `sudo bash /opt/ddlab/scripts/simulate-latency.sh on 200 50` | "Imagine someone misconfigures QoS on a transit router…" |
+| 0:17 | Watch hop 2 light up | Refresh path view, point at hop-2 RTT going from 1 ms → 200 ms; baseline path (hop 1, csr1) stays clean | "Notice we IMMEDIATELY know it's hop 2 — not just 'the path is slow'. Saves 30+ min of `traceroute` from a jumphost." |
+| 0:22 | Show monitor | Open the recommended `network_path_hop_rtt` monitor | "And we can alert on a per-hop basis." |
+| 0:25 | Cleanup + Q&A | `sudo bash /opt/ddlab/scripts/simulate-latency.sh off` | |
+
+### 60-min demo agenda
+
+Same as 30-min, plus:
+
+| Time | Add | Run |
+|---|---|---|
+| 0:30 | Scenario 2: packet loss | `simulate-packet-loss.sh on csr2 30` |
+| 0:38 | Scenario 4: interface flap | `simulate-interface-down.sh on csr2 eth1 30` |
+| 0:46 | Scenario 6: full WAN degradation | `simulate-network-faults.sh` → menu option for "full degradation" |
+| 0:54 | SNMP traps demo | Trigger BGP shutdown — show `source:snmp-traps` log appearing in real time |
+
+### Resetting between runs
+
+```bash
+# One-shot: nuke all simulated faults
+sudo bash /opt/ddlab/scripts/simulate-network-faults.sh
+# choose: 99) Reset everything
+```
+
+Or:
+
+```bash
+sudo bash /opt/ddlab/scripts/simulate-latency.sh     off
+sudo bash /opt/ddlab/scripts/simulate-packet-loss.sh off csr   2>/dev/null || true
+sudo bash /opt/ddlab/scripts/simulate-packet-loss.sh off csr2  2>/dev/null || true
+sudo bash /opt/ddlab/scripts/simulate-packet-loss.sh off csr3  2>/dev/null || true
+sudo bash /opt/ddlab/scripts/simulate-cpu-stress.sh  off csr2  2>/dev/null || true
+```
+
+### Building dashboards for the demo
+
+Two pre-built dashboards customers love seeing:
+
+1. **"WAN Health Single Pane"** — combine these widgets:
+   - Top: NDM fleet status table (group by `site`, count `OK / WARNING / ERROR`)
+   - Middle: NetworkPath RTT timeseries `avg:datadog.network_path.path.hop_rtt{path_type:data-plane} by {path_name}`
+   - Bottom-left: NetworkPath reachability heatmap by destination
+   - Bottom-right: SNMP trap stream `source:snmp-traps`
+   - Overlay: Datadog events tagged `source:netops-runbook` for change windows
+
+2. **"Per-device deep-dive"** — pick a CSR, show:
+   - Top widgets: CPU, memory, BGP peer state from `snmp.*` metrics
+   - Middle: interface throughput per `interface` tag
+   - Bottom: NetworkPath paths whose hops include this device's interfaces
+
+Both dashboards can be exported as JSON and shipped to the customer for their own use — the metric/tag model is identical between this lab and production.
+
+---
+
+## Further reading
+
+- [Datadog Network Monitoring](https://docs.datadoghq.com/network_monitoring/) (top-level)
+- [NDM overview](https://docs.datadoghq.com/network_monitoring/devices/) + [setup](https://docs.datadoghq.com/network_monitoring/devices/setup/)
+- [SNMP profiles](https://docs.datadoghq.com/network_monitoring/devices/profiles/) + [profile authoring](https://docs.datadoghq.com/network_monitoring/devices/profile_format/)
+- [NetworkPath](https://docs.datadoghq.com/network_monitoring/network_path/) + [setup](https://docs.datadoghq.com/network_monitoring/network_path/setup/)
+- [SNMP traps](https://docs.datadoghq.com/network_monitoring/devices/snmp_traps/) and [NetFlow](https://docs.datadoghq.com/network_monitoring/devices/netflow/)
+- [Topology Map (CDP/LLDP)](https://docs.datadoghq.com/network_monitoring/devices/topology_map/)
+- [Cloud Network Monitoring](https://docs.datadoghq.com/network_monitoring/cloud_network_monitoring/) — adjacent product for cloud flow telemetry
+- [Datadog Agent SNMP integration source](https://github.com/DataDog/integrations-core/tree/master/snmp) — bundled profiles + Python check source
+- [`README.md`](README.md) — lab setup, integration snippets you can lift to production
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — operational gotchas
