@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datadog NDM + NetworkPath — Demo Lab</title>
+<style>
+:root {
+  --dd-purple:       #632CA6;
+  --dd-purple-light: #7B3FC4;
+  --dd-purple-dark:  #3D1A6E;
+  --dd-purple-xdark: #1D1133;
+  --dd-orange:       #FF6B35;
+  --dd-green:        #00C7B7;
+  --dd-blue:         #3E9BFF;
+  --bg:              #0D1117;
+  --bg-panel:        #161B22;
+  --bg-card:         #1C2128;
+}
+html, body {
+  width:100%; height:100%; margin:0; padding:0; overflow:hidden;
+  font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+  background:var(--bg); color:#fff;
+}
+h1 { font-size: clamp(36px, 5vw, 64px); margin: 0 0 12px 0; line-height:1.1; }
+h2 { font-size: clamp(28px, 3.5vw, 48px); margin: 0 0 16px 0; line-height:1.15; }
+h3 { font-size: clamp(20px, 2.2vw, 26px); margin: 0 0 8px 0; }
+p  { font-size: clamp(16px, 1.7vw, 20px); margin: 0 0 12px 0; line-height:1.5; }
+.subtitle { font-size: clamp(20px, 2.4vw, 28px); color: rgba(255,255,255,0.85); font-weight: 400; margin-bottom: 24px; }
+.label { font-size:15px; color: rgba(255,255,255,0.7); letter-spacing:0.08em; text-transform:uppercase; }
+code, pre { font-family:'SF Mono','Fira Code','Menlo',monospace; }
+
+/* Slide containers */
+#deck { position:relative; width:100vw; height:100vh; cursor: pointer; }
+.slide {
+  position:absolute; inset:0; opacity:0; pointer-events:none;
+  transition: opacity 0.5s ease, transform 0.5s ease;
+  transform: translateX(60px); overflow:hidden;
+  padding: 56px 80px;
+  box-sizing: border-box;
+}
+.slide.active { opacity:1; pointer-events:all; transform: translateX(0); }
+.slide.prev   { opacity:0; transform: translateX(-60px); }
+
+/* Backgrounds */
+.grid-overlay {
+  position:absolute; inset:0; pointer-events:none;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+.glow {
+  position:absolute; pointer-events:none; filter: blur(60px);
+  border-radius: 50%;
+}
+
+/* Progress / counter */
+.progress {
+  position:fixed; top:0; left:0; height:3px; width:0;
+  background: linear-gradient(90deg, var(--dd-purple-light), var(--dd-orange));
+  transition: width 0.4s ease; z-index:100;
+}
+.counter {
+  position:fixed; bottom:18px; right:24px;
+  font-size:14px; color:rgba(255,255,255,0.5);
+  font-family: 'SF Mono', monospace; z-index: 100;
+  background: rgba(0,0,0,0.5); padding:4px 10px; border-radius:6px;
+}
+
+/* Sidebar (cover/summary) */
+.dd-sidebar {
+  position:absolute; right:0; top:0; bottom:0; width:200px;
+  background: linear-gradient(180deg, var(--dd-purple-dark), var(--dd-purple));
+  display:flex; flex-direction:column;
+  padding: 36px 22px;
+  box-shadow: -16px 0 60px rgba(99,44,166,0.4);
+}
+.dd-sidebar .brand { font-size:24px; font-weight:800; letter-spacing:0.02em; margin-bottom: 18px; }
+.dd-sidebar .pillar-list { font-size:16px; color:rgba(255,255,255,0.92); line-height:2.1; }
+.dd-sidebar .pillar-list li { list-style:none; padding-left: 14px; position:relative; }
+.dd-sidebar .pillar-list li::before {
+  content:''; position:absolute; left:0; top:14px; width:6px; height:6px;
+  background:#FFD24A; border-radius:50%;
+}
+
+/* Cards */
+.card {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  padding: 18px 22px;
+}
+.card-purple {
+  background: rgba(99,44,166,0.18);
+  border: 1px solid rgba(123,63,196,0.45);
+  border-radius: 14px;
+  padding: 18px 22px;
+}
+.card-green { background: rgba(0,199,183,0.12); border:1px solid rgba(0,199,183,0.35); border-radius:14px; padding:18px 22px; }
+.card-orange { background: rgba(255,107,53,0.12); border:1px solid rgba(255,107,53,0.35); border-radius:14px; padding:18px 22px; }
+
+.badge {
+  display:inline-block; padding:4px 11px; border-radius:14px;
+  font-size:14px; font-weight:700;
+  background: rgba(99,44,166,0.4); color:#D0A8FF;
+  border: 1px solid rgba(123,63,196,0.55);
+  margin: 0 4px 4px 0;
+}
+.badge-green { background: rgba(0,199,183,0.2); color:#7FF5E9; border-color: rgba(0,199,183,0.55); }
+.badge-orange { background: rgba(255,107,53,0.2); color:#FFB793; border-color: rgba(255,107,53,0.55); }
+
+.code-block {
+  background: #0A0617; border:1px solid rgba(255,255,255,0.08);
+  border-radius: 10px; padding: 14px 18px;
+  font-family:'SF Mono','Fira Code',monospace;
+  font-size:14px; line-height:1.7; color:#D0A8FF;
+  white-space: pre; overflow:auto;
+}
+.code-block .c { color:#7B8FB3; }                /* comments */
+.code-block .k { color:#A892FF; font-weight:700; }/* keys */
+.code-block .v { color:#7FF5E9; }                /* values */
+.code-block .s { color:#FFB793; }                /* strings */
+
+.flex-row { display:flex; gap:18px; }
+.flex-col { display:flex; flex-direction: column; gap:14px; }
+.grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap:18px; }
+.grid-3 { display:grid; grid-template-columns: repeat(3, 1fr); gap:18px; }
+.grid-4 { display:grid; grid-template-columns: repeat(4, 1fr); gap:14px; }
+
+a { color:#A892FF; text-decoration:none; border-bottom:1px dashed rgba(168,146,255,0.5); }
+a:hover { color:#FFB793; border-bottom-color:#FFB793; }
+
+table { border-collapse: collapse; width:100%; font-size:16px; }
+table th, table td {
+  text-align:left; padding: 9px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+table th { color:#A892FF; font-weight:600; font-size:14px; letter-spacing:0.05em; text-transform:uppercase; }
+table tr:last-child td { border-bottom:none; }
+
+.kpi { text-align:center; padding:14px 12px;
+  background: rgba(99,44,166,0.18); border:1px solid rgba(123,63,196,0.45); border-radius:14px; }
+.kpi .num { font-size:42px; font-weight:800; color:#D0A8FF; line-height:1; margin-bottom:6px; }
+.kpi .lbl { font-size:14px; color:rgba(255,255,255,0.7); letter-spacing:0.08em; text-transform:uppercase; }
+
+.hero-image { width:100%; height:100%; object-fit:cover; }
+.section-tag { font-size:14px; letter-spacing:0.16em; color:#A892FF; text-transform:uppercase; margin-bottom: 8px; font-weight:700; }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="counter" id="counter">1 / 12</div>
+
+<div id="deck">
+
+<!-- ============ SLIDE 1 — COVER ============ -->
+<div class="slide active" style="background: linear-gradient(135deg, #1D1133 0%, #0D1117 60%, #0D1117 100%);">
+  <img src="slides/hero.png" alt="" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0.42;">
+  <div style="position:absolute; inset:0; background:linear-gradient(90deg, rgba(13,17,23,0.92) 0%, rgba(13,17,23,0.55) 50%, rgba(29,17,51,0.7) 100%);"></div>
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+
+  <div class="dd-sidebar">
+    <div class="brand">📊 Datadog</div>
+    <div class="label" style="margin-bottom:10px; color:rgba(255,255,255,0.7);">Network Observability</div>
+    <ul class="pillar-list" style="padding:0; margin:0;">
+      <li>NDM (SNMP)</li>
+      <li>NetworkPath</li>
+      <li>SNMP Traps</li>
+      <li>NetFlow</li>
+      <li>Topology Map</li>
+      <li>Cloud Network</li>
+    </ul>
+    <div style="flex:1;"></div>
+    <div style="font-size:12px; color:rgba(255,255,255,0.6);">SE Demo Asset · 2026</div>
+  </div>
+
+  <div style="position:relative; max-width:1100px; margin-top:60px;">
+    <div class="section-tag">Datadog SE Demo Lab</div>
+    <h1 style="background: linear-gradient(135deg, #fff 0%, #D0A8FF 60%, #A892FF 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">Datadog NDM + NetworkPath</h1>
+    <h1 style="font-size: clamp(28px, 3.5vw, 44px); color:rgba(255,255,255,0.92); font-weight:600;">Containerlab Demo Lab on GCP</h1>
+    <p class="subtitle" style="margin-top:14px;">Five-router multi-hop chain · real Cisco IOS-XE · destroy → apply → working in ~12&nbsp;min</p>
+
+    <div class="grid-4" style="margin-top:36px; max-width:880px;">
+      <div class="kpi"><div class="num">5</div><div class="lbl">CSR1000v</div></div>
+      <div class="kpi"><div class="num">8</div><div class="lbl">NetworkPath traces</div></div>
+      <div class="kpi"><div class="num">5</div><div class="lbl">Hops max</div></div>
+      <div class="kpi"><div class="num">~12 min</div><div class="lbl">Destroy → Apply → Working</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 2 — WHAT THIS LAB IS ============ -->
+<div class="slide" style="padding:48px 80px;">
+  <div class="grid-overlay" style="opacity:0.5;"></div>
+  <div class="glow" style="width:480px; height:480px; background:rgba(99,44,166,0.25); top:-180px; right:-160px;"></div>
+
+  <div class="section-tag">What this lab is</div>
+  <h2>A reproducible Datadog Network Observability sandbox</h2>
+  <p style="max-width:1200px; color:rgba(255,255,255,0.85);">Terraform + bootstrap scripts that spin up a self-contained NDM + NetworkPath lab on GCP. One <code>terraform apply</code>, one qcow2 upload, fifteen minutes — and you have five real Cisco CSR1000v routers polled by SNMP, plus 8 NetworkPath traces with up to five router hops. Identical agent, identical SNMP profiles, identical UI to a real production deployment.</p>
+
+  <div class="grid-3" style="margin-top:30px;">
+    <div class="card-purple">
+      <div class="badge">Audience</div>
+      <h3 style="margin-top:14px;">SE / Solutions Architect</h3>
+      <p style="font-size:16px;">Network Observability customer demos, POVs, scale conversations, "show me what NDM looks like" calls.</p>
+    </div>
+    <div class="card-purple">
+      <div class="badge">What it proves</div>
+      <h3 style="margin-top:14px;">Real multi-hop traceroute</h3>
+      <p style="font-size:16px;">Most demo orgs only show 1-hop reachability. This lab shows hop-by-hop RTT across <span style="color:#7FF5E9;font-weight:700;">5 real routers</span>, identifying which hop is slow.</p>
+    </div>
+    <div class="card-purple">
+      <div class="badge">How it's safe</div>
+      <h3 style="margin-top:14px;">Customer-friendly</h3>
+      <p style="font-size:16px;">Single GCE VM, no public IPs, IAP tunnel SSH. <code>terraform destroy</code> tears it all down. 2&nbsp;GB GCS cache survives for next apply.</p>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:24px;">
+    <span class="badge badge-green">NDM / SNMP</span>
+    <span class="badge badge-green">NetworkPath</span>
+    <span class="badge badge-green">SNMP Traps</span>
+    <span class="badge badge-green">CDP / LLDP topology</span>
+    <span class="badge">5 × Cisco CSR1000v 16.07</span>
+    <span class="badge">FRR eBGP peer</span>
+    <span class="badge">iBGP chain</span>
+    <span class="badge badge-orange">tc netem fault injection</span>
+    <span class="badge badge-orange">hping3 load test</span>
+    <span class="badge badge-orange">Datadog Events API</span>
+  </div>
+
+  <div class="grid-4" style="margin-top:24px;">
+    <div class="card" style="padding:14px 18px;">
+      <div class="label" style="margin-bottom:4px;">1 · Apply</div>
+      <p style="font-size:15px; margin:0;"><code>terraform apply</code> → VM, VPC, NAT, GCS cache bucket. ~75 s.</p>
+    </div>
+    <div class="card" style="padding:14px 18px;">
+      <div class="label" style="margin-bottom:4px;">2 · Upload qcow2</div>
+      <p style="font-size:15px; margin:0;">One-time <code>gsutil cp</code> of the licensed CSR1000v image to the cache bucket.</p>
+    </div>
+    <div class="card" style="padding:14px 18px;">
+      <div class="label" style="margin-bottom:4px;">3 · Reset VM</div>
+      <p style="font-size:15px; margin:0;">Startup script builds vrnetlab image, caches the tarball, deploys lab.</p>
+    </div>
+    <div class="card-green" style="padding:14px 18px;">
+      <div class="label" style="margin-bottom:4px;">Done</div>
+      <p style="font-size:15px; margin:0;">5/5 SNMP <span style="color:#7FF5E9;">[OK]</span> · 8/8 NetworkPath <span style="color:#7FF5E9;">[OK]</span> in ~15 min.</p>
+    </div>
+  </div>
+
+  <div class="grid-3" style="margin-top:18px;">
+    <div class="card-purple" style="padding:14px 18px;">
+      <div class="label" style="margin-bottom:6px;">📊 You will demo</div>
+      <p style="font-size:14px; margin:0;">5 CSRs in NDM <code>/devices</code> · 8 NetworkPath traces with 1-5 hops · live SNMP polling · BGP table · CDP topology map · interface throughput.</p>
+    </div>
+    <div class="card-purple" style="padding:14px 18px;">
+      <div class="label" style="margin-bottom:6px;">🎬 You can break it on demand</div>
+      <p style="font-size:14px; margin:0;">Inject latency, packet loss, BGP flap, link-down, CPU stress, or 100×-cap traffic — watch alerts fire and NetworkPath light up the bad hop within 60s.</p>
+    </div>
+    <div class="card-purple" style="padding:14px 18px;">
+      <div class="label" style="margin-bottom:6px;">📦 You can hand it off</div>
+      <p style="font-size:14px; margin:0;">Same Terraform repo runs in the customer's GCP. They get an unsupervised POV that mirrors a real production agent + profile setup.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 3 — ARCHITECTURE ============ -->
+<div class="slide">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:600px; height:600px; background:rgba(99,44,166,0.2); top:-200px; left:-200px;"></div>
+
+  <div class="section-tag">GCP infrastructure</div>
+  <h2>Single-VM lab inside a private VPC</h2>
+
+  <div class="flex-row" style="margin-top:14px; align-items:flex-start;">
+    <div style="flex: 1.7; max-width: 60%;">
+      <img src="slides/architecture.png" alt="GCP architecture diagram" style="width:100%; border-radius:14px; border:1px solid rgba(255,255,255,0.12); box-shadow: 0 12px 40px rgba(0,0,0,0.5);">
+    </div>
+    <div class="flex-col" style="flex:1.3;">
+      <div class="card">
+        <div class="label">Compute</div>
+        <h3>n2-standard-8 GCE</h3>
+        <p style="font-size:16px;">8 vCPU · 32&nbsp;GB · nested-KVM · Debian 12 · 200&nbsp;GB SSD. Five CSR1000v VMs at 4&nbsp;GB each + Docker overhead = ~25&nbsp;GB used.</p>
+      </div>
+      <div class="card">
+        <div class="label">Network</div>
+        <h3>Private VPC + Cloud NAT</h3>
+        <p style="font-size:16px;">10.100.0.0/24 with no public IPs. Outbound via Cloud NAT, inbound SSH only via Google IAP tunnel. Customer-grade safe-by-default.</p>
+      </div>
+      <div class="card-purple">
+        <div class="label">Persistence</div>
+        <h3>GCS image cache bucket</h3>
+        <p style="font-size:16px;">Stores the licensed CSR1000v qcow2 + the pre-built vrnetlab Docker image. Survives <code>terraform destroy</code> so the next apply is ~10&nbsp;min, not ~25.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 4 — LAB TOPOLOGY ============ -->
+<div class="slide">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:540px; height:540px; background:rgba(123,63,196,0.22); top:-180px; right:-160px;"></div>
+
+  <div class="section-tag">Inside the GCE VM — the network</div>
+  <h2>5-CSR iBGP chain, agent on a data-plane veth</h2>
+
+  <div class="flex-row" style="align-items:flex-start; margin-top:10px;">
+    <div style="flex: 2;">
+      <img src="slides/topology.png" alt="5-CSR network topology" style="width:100%; border-radius:14px; border:1px solid rgba(255,255,255,0.12); box-shadow: 0 12px 40px rgba(0,0,0,0.5);">
+    </div>
+    <div class="flex-col" style="flex:1; max-width:330px;">
+      <div class="card">
+        <div class="label">Why eth2 matters</div>
+        <p style="font-size:16px;">A direct veth from <code>dd-agent eth2</code> to <code>CSR1 Gi4</code> on <code>10.99.0.0/30</code> bypasses vrnetlab's SLiRP-NAT'd Mgmt-intf VRF — without it, ICMP probes to <code>10.100.X.1</code> get NAT'd back to the bridge.</p>
+      </div>
+      <div class="card-purple">
+        <div class="label">Routing</div>
+        <p style="font-size:16px;">FRR eBGP (AS 65001) peers with CSR1 (AS 65000). CSR1↔CSR5 are full iBGP with belt-and-suspenders static routes for fast cold-boot convergence.</p>
+      </div>
+      <div class="card">
+        <div class="label">SNMP</div>
+        <p style="font-size:16px;">All five CSRs polled via SNMPv3 (<code>auth: SHA</code>, <code>priv: AES</code>) using the bundled <code>cisco-csr1000v</code> profile through the <em>core</em> loader.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 5 — NDM IN 5 LINES ============ -->
+<div class="slide">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:540px; height:540px; background:rgba(99,44,166,0.2); bottom:-180px; left:-160px;"></div>
+
+  <div class="section-tag">Concept</div>
+  <h2>How NDM works <span style="color:#A892FF; font-weight:400;">— in 5 lines</span></h2>
+
+  <div class="grid-2" style="margin-top:18px;">
+    <div class="flex-col">
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#D0A8FF; line-height:1;">1</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Define devices</h3><p style="font-size:16px;">Agent reads <code>instances.yaml</code> (or autodiscovers a CIDR).</p></div>
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#D0A8FF; line-height:1;">2</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Match a profile</h3><p style="font-size:16px;">For each device, agent issues <code>GetRequest sysObjectID.0</code> and matches against a vendor <a href="https://docs.datadoghq.com/network_monitoring/devices/profiles/">profile YAML</a> (200+ bundled — Cisco, Juniper, F5, Palo Alto …).</p></div>
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#D0A8FF; line-height:1;">3</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Walk OIDs</h3><p style="font-size:16px;">Profile declares which OIDs to walk. Agent walks them every <code>min_collection_interval</code> (default 15s).</p></div>
+        </div>
+      </div>
+      <div class="card-orange">
+        <div class="label">SE talking point</div>
+        <p style="font-size:15px; margin:4px 0 0 0;">"For your fleet, we already have profiles for the top 200 vendors. For the remaining 5%, drop a YAML in <code>profiles/</code> and the core loader picks it up — no agent rebuild."</p>
+      </div>
+    </div>
+    <div class="flex-col">
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#D0A8FF; line-height:1;">4</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Send to Datadog</h3><p style="font-size:16px;">Metrics, tags, metadata, interface state, BGP table, CDP neighbors all flow into the same backend as APM / Logs / Infra.</p></div>
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#D0A8FF; line-height:1;">5</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">View at /devices</h3><p style="font-size:16px;">Fleet inventory at <a href="https://docs.datadoghq.com/network_monitoring/devices/">/devices</a> with per-device drill-downs, topology map, geomap, monitors.</p></div>
+        </div>
+      </div>
+      <div class="card-green">
+        <div class="label">Bundled features</div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
+          <span class="badge badge-green">SNMP polling</span>
+          <span class="badge badge-green">SNMP traps</span>
+          <span class="badge badge-green">NetFlow</span>
+          <span class="badge badge-green">CDP / LLDP topology</span>
+          <span class="badge badge-green">Subnet autodiscovery</span>
+          <span class="badge badge-green">Custom profiles</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 6 — NETWORKPATH IN 5 LINES ============ -->
+<div class="slide">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:540px; height:540px; background:rgba(0,199,183,0.18); top:-160px; right:-160px;"></div>
+
+  <div class="section-tag">Concept</div>
+  <h2>How NetworkPath works <span style="color:#7FF5E9; font-weight:400;">— in 5 lines</span></h2>
+
+  <div class="grid-2" style="margin-top:18px;">
+    <div class="flex-col">
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#7FF5E9; line-height:1;">1</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Define destinations</h3><p style="font-size:16px;">Agent reads <code>network_path.d/conf.yaml</code> — list of hostnames/IPs to reach.</p></div>
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#7FF5E9; line-height:1;">2</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Run traceroute</h3><p style="font-size:16px;">For each, agent's <em>system-probe</em> sends N parallel TCP / UDP / ICMP traceroutes per check run.</p></div>
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#7FF5E9; line-height:1;">3</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Capture every hop</h3><p style="font-size:16px;">Each probe records <strong>every hop's IP, RTT, and reachability</strong> as a structured event.</p></div>
+        </div>
+      </div>
+    </div>
+    <div class="flex-col">
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#7FF5E9; line-height:1;">4</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Enrich + send</h3><p style="font-size:16px;">Hops are enriched with reverse-DNS / NDM device match, and time-series stored in Datadog.</p></div>
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:32px; font-weight:800; color:#7FF5E9; line-height:1;">5</div>
+          <div><h3 style="font-size:18px; margin-bottom:4px;">Query continuously</h3><p style="font-size:16px;">"Avg RTT to hop 3 over last 24h?", "Reachability dropped &lt;99%?", "Did the path <em>change</em>?" — answered at <a href="https://docs.datadoghq.com/network_monitoring/network_path/">/network/path</a>.</p></div>
+        </div>
+      </div>
+      <div class="card-green">
+        <h3 style="font-size:18px; margin-bottom:6px; color:#7FF5E9;">Why it's useful</h3>
+        <p style="font-size:16px;">Answers the "<strong>which hop is slow?</strong>" question that historically required a war-room call to the network team and a manual <code>traceroute</code> from a jumphost.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-top:18px;">
+    <div class="card">
+      <div class="label" style="margin-bottom:6px;">Sample query — RTT per hop on a path</div>
+      <div class="code-block" style="font-size:13px;"><span class="k">avg:datadog.network_path.path.hop_rtt</span>
+  {<span class="v">path_name:agent-to-csr5-cnx-endpoint</span>}
+  <span class="k">by</span> {<span class="v">hop_index, hop_ip_address</span>}</div>
+    </div>
+    <div class="card">
+      <div class="label" style="margin-bottom:6px;">Sample query — path reachability over time</div>
+      <div class="code-block" style="font-size:13px;"><span class="k">avg:datadog.network_path.path.reachable</span>
+  {<span class="v">path_type:data-plane</span>}
+  <span class="k">by</span> {<span class="v">destination_service</span>}</div>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:14px;">
+    <span class="badge badge-green">TCP</span>
+    <span class="badge badge-green">UDP</span>
+    <span class="badge badge-green">ICMP</span>
+    <span class="badge badge-green">3 traceroutes / interval</span>
+    <span class="badge badge-green">e2e probes (50 / interval)</span>
+    <span class="badge badge-green">reverse-DNS enrichment</span>
+    <span class="badge badge-green">NDM device match</span>
+  </div>
+</div>
+
+<!-- ============ SLIDE 7 — HOW THEY COMPLEMENT ============ -->
+<div class="slide">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:540px; height:540px; background:rgba(99,44,166,0.22); top:-160px; left:-180px;"></div>
+
+  <div class="section-tag">Concept</div>
+  <h2>NDM and NetworkPath — complementary, same backend</h2>
+
+  <div class="card" style="padding:22px 26px; margin-top:14px;">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:42%;">Customer question</th>
+          <th>Product that answers it</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>"Is <strong>the device</strong> healthy?" — CPU, memory, fans, interface counters, BGP state</td>
+          <td><span class="badge">NDM</span> SNMP polling, per-device profile</td>
+        </tr>
+        <tr>
+          <td>"Is <strong>the path</strong> through these devices healthy?" — RTT, loss, hop changes</td>
+          <td><span class="badge badge-green">NetworkPath</span> traceroute-as-metric</td>
+        </tr>
+        <tr>
+          <td>"Is <strong>the link</strong> between two specific devices saturated?"</td>
+          <td><span class="badge">NDM</span> ifIn/Out octets + <span class="badge badge-orange">NetFlow</span> top-talkers</td>
+        </tr>
+        <tr>
+          <td>"Did <strong>routing converge</strong> after that change?"</td>
+          <td><span class="badge">NDM</span> BGP table + <span class="badge badge-green">NetworkPath</span> path-change events</td>
+        </tr>
+        <tr>
+          <td>"Did <strong>my app's slowdown</strong> coincide with a network issue?"</td>
+          <td>Cross-product correlation: APM + <span class="badge">NDM</span> + <span class="badge badge-green">NetworkPath</span> in one dashboard</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-4" style="margin-top:18px;">
+    <div class="card-purple">
+      <div class="label">Same tag model</div>
+      <p style="font-size:15px; margin-bottom:0;"><code>env</code>, <code>service</code>, <code>team</code>, <code>device_namespace</code>, <code>site</code> — uniform across every product.</p>
+    </div>
+    <div class="card-purple">
+      <div class="label">Same alerting</div>
+      <p style="font-size:15px; margin-bottom:0;">Standard Datadog monitors (Terraform-managed) on every metric — no separate "network alerting" stack.</p>
+    </div>
+    <div class="card-purple">
+      <div class="label">Same UI</div>
+      <p style="font-size:15px; margin-bottom:0;">NetworkPath widget next to APM service map + DBM panel on one dashboard. One tab.</p>
+    </div>
+    <div class="card-purple">
+      <div class="label">Same workflows</div>
+      <p style="font-size:15px; margin-bottom:0;">Notebooks, SLOs, on-call rotations, runbooks, IaC monitors — all already built. Network just plugs in.</p>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-top:18px;">
+    <div class="card">
+      <div class="label" style="margin-bottom:6px;">Cross-product correlation example — "Did the app slow because of the network?"</div>
+      <div class="code-block" style="font-size:13px;"><span class="c"># APM trace says span p95 → 2s. Pull NetworkPath at the same moment.</span>
+<span class="k">avg:trace.servlet.request.duration</span>{<span class="v">service:checkout</span>}.<span class="v">as_count()</span>
+<span class="k">avg:datadog.network_path.path.hop_rtt</span>{<span class="v">path_name:checkout-to-db-tier</span>} <span class="k">by</span> {<span class="v">hop_index</span>}
+<span class="c"># Overlay → if hop 4 RTT spike correlates with span duration spike, it's the network.</span></div>
+    </div>
+    <div class="card-green">
+      <div class="label" style="margin-bottom:6px;">Why it matters in customer pitches</div>
+      <p style="font-size:16px; margin:0;">When a customer's APM, infra, network, security, and synthetic monitoring all live in one platform, the question "is this OUR problem?" has one place to look — and the answer is faster than any war-room dial-out.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 8 — DEMO SCENARIO 1: HOP LATENCY ============ -->
+<div class="slide">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:480px; height:480px; background:rgba(255,107,53,0.2); top:-160px; right:-160px;"></div>
+
+  <div class="section-tag">Demo Scenario 1 — In-transit hop latency spike</div>
+  <h2>Inject 200&nbsp;ms on CSR2 → hop&nbsp;2 lights up</h2>
+
+  <div class="flex-row" style="margin-top:14px; align-items:flex-start;">
+    <div style="flex:1.4;">
+      <img src="slides/scenario-latency.png" alt="Hop 2 latency spike scenario" style="width:100%; border-radius:14px; border:1px solid rgba(255,255,255,0.12); box-shadow: 0 12px 40px rgba(0,0,0,0.5);">
+    </div>
+    <div class="flex-col" style="flex:1;">
+      <div class="card-orange">
+        <div class="label">Inject</div>
+        <div class="code-block" style="margin-top:8px;"><span class="c"># 200ms ± 50ms jitter on CSR2 transit ifaces</span>
+sudo bash /opt/ddlab/scripts/<span class="k">simulate-latency.sh</span> on 200 50</div>
+      </div>
+      <div class="card">
+        <div class="label">Observed in this lab</div>
+        <p style="font-size:16px; margin-bottom:6px;">Pre-injection — agent → csr5 (5 hops):</p>
+        <div class="code-block" style="font-size:13px;">hop 1: 10.99.0.1     1.5 ms
+hop 2: 10.0.12.2     1.7 ms
+hop 3: 10.0.23.2     2.0 ms
+hop 4: 10.0.34.2     2.5 ms
+hop 5: 10.100.5.1    3.0 ms</div>
+      </div>
+      <div class="card-orange">
+        <p style="font-size:16px; margin-bottom:6px;">Post-injection (same path):</p>
+        <div class="code-block" style="font-size:13px;">hop 1: 10.99.0.1     1.5 ms
+<span class="s">hop 2: 10.0.12.2   170+ ms 🔴</span>
+hop 3: 10.0.23.2   470 ms
+hop 4: 10.0.34.2   360 ms
+hop 5: 10.100.5.1  370 ms</div>
+        <p style="font-size:15px; margin-top:8px; margin-bottom:0; color:#FFB793;">Latency isolated at <strong>hop 2 (CSR2 Gi2)</strong>. Hop 1 stays clean.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px; padding:14px 22px;">
+    <div class="label" style="margin-bottom:6px;">Recommended Datadog monitor (Terraform)</div>
+    <div class="code-block" style="font-size:13px;"><span class="k">resource</span> <span class="s">"datadog_monitor"</span> <span class="s">"np_hop_rtt_high"</span> {
+  <span class="k">name</span>  = <span class="s">"[NetworkPath] Hop RTT &gt; 100ms on {{path_name.name}} hop {{hop_index.name}}"</span>
+  <span class="k">type</span>  = <span class="s">"metric alert"</span>
+  <span class="k">query</span> = <span class="s">"avg(last_5m):avg:datadog.network_path.path.hop_rtt{path_type:data-plane} by {path_name,hop_index} &gt; 100"</span>
+  <span class="c"># by {hop_index} = the magic — alerts fire PER hop, not per path</span>
+}</div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 9 — DEMO SCENARIO 2: LOAD TEST ============ -->
+<div class="slide">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:540px; height:540px; background:rgba(123,63,196,0.22); top:-180px; left:-160px;"></div>
+
+  <div class="section-tag">Demo Scenario 2 — Load test against CSR-WAN-TRANSIT</div>
+  <h2>The unlicensed CSR1000v throttles at ~100 Kbps</h2>
+
+  <p style="max-width:1200px;">A bundled <code>loadtest.sh</code> uses <strong>hping3</strong> to overload CSR2's data-plane shaper and posts Datadog events at start/end so the test window annotates NetworkPath graphs automatically.</p>
+
+  <div class="grid-2" style="margin-top:18px;">
+    <div class="card">
+      <h3>Five severity modes</h3>
+      <table>
+        <thead><tr><th>Mode</th><th>Rate</th><th>vs cap</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>steady</code></td><td>~80 Kbps</td><td>Under</td><td>Flat 0% loss</td></tr>
+          <tr><td><code>trickle</code></td><td>~150 Kbps</td><td>1.5×</td><td>Sawtooth latency, 0% loss</td></tr>
+          <tr><td><code>burst</code></td><td>~800 Kbps</td><td>8×</td><td>Loss + spikes</td></tr>
+          <tr><td><code>flood</code></td><td>host CPU</td><td>100×+</td><td>Heavy loss</td></tr>
+          <tr><td><code>overload</code></td><td>~58 Mbps</td><td>800×</td><td>&gt;99% loss</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="flex-col">
+      <div class="card-purple">
+        <div class="label">Demo sequence (~10 min)</div>
+        <div class="code-block" style="margin-top:8px;"><span class="c"># Green baseline</span>
+loadtest.sh csr-wan-transit <span class="v">steady   120</span>
+<span class="c"># Subtle brownout — most production-like</span>
+loadtest.sh csr-wan-transit <span class="v">trickle  120</span>
+<span class="c"># Clear degradation</span>
+loadtest.sh csr-wan-transit <span class="v">burst     90</span>
+<span class="c"># Red alert</span>
+loadtest.sh csr-wan-transit <span class="v">overload  60</span></div>
+      </div>
+      <div class="card-orange">
+        <div class="label">Auto-annotated</div>
+        <p style="font-size:16px; margin-bottom:0;">Each run posts <code>LoadTest START</code> + <code>LoadTest END</code> events tagged <code>scenario:loadtest mode:&lt;mode&gt; target:&lt;target&gt;</code> — they appear as flags on every NetworkPath graph that overlaps the window.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-4" style="margin-top:18px;">
+    <div class="card" style="padding:12px 16px;">
+      <div class="label" style="margin-bottom:4px;">Expected NetworkPath signature</div>
+      <p style="font-size:14px; margin:0;"><strong style="color:#7FF5E9;">steady</strong> — flat ~1-3ms RTT, 0% loss. Baseline showcase.</p>
+    </div>
+    <div class="card" style="padding:12px 16px;">
+      <p style="font-size:14px; margin:0;"><strong style="color:#FFB793;">trickle</strong> — sawtooth latency 2-9× baseline, 0% visible loss. <em>Brownout signature.</em></p>
+    </div>
+    <div class="card" style="padding:12px 16px;">
+      <p style="font-size:14px; margin:0;"><strong style="color:#FFB793;">burst</strong> — clear spikes, 10-30% loss. Customer pages on it.</p>
+    </div>
+    <div class="card-orange" style="padding:12px 16px;">
+      <p style="font-size:14px; margin:0;"><strong>overload</strong> — &gt;99% loss for 60s, 1-2 min recovery tail. Total outage.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 10 — INTEGRATION SNIPPETS ============ -->
+<div class="slide" style="padding:42px 80px;">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:480px; height:480px; background:rgba(99,44,166,0.2); bottom:-180px; right:-160px;"></div>
+
+  <div class="section-tag">Lift these into the customer's environment</div>
+  <h2>Standard Datadog Agent config — copy-paste</h2>
+
+  <div class="grid-2" style="margin-top:14px;">
+    <div class="card">
+      <div class="label" style="margin-bottom:6px;"><code>conf.d/snmp.d/conf.yaml</code> &nbsp;<a href="https://docs.datadoghq.com/network_monitoring/devices/setup/" style="font-size:12px;">[setup docs]</a></div>
+      <div class="code-block" style="font-size:13px;"><span class="k">instances:</span>
+  - <span class="k">ip_address:</span> <span class="v">10.10.20.5</span>
+    <span class="k">snmp_version:</span> <span class="v">3</span>
+    <span class="k">user:</span>          <span class="v">dduser</span>
+    <span class="k">authProtocol:</span>  <span class="v">SHA</span>
+    <span class="k">authKey:</span>       <span class="s">&lt;auth-pass&gt;</span>
+    <span class="k">privProtocol:</span>  <span class="v">AES</span>
+    <span class="k">privKey:</span>       <span class="s">&lt;priv-pass&gt;</span>
+    <span class="k">loader:</span>  <span class="v">core</span>           <span class="c"># faster, scales further</span>
+    <span class="k">profile:</span> <span class="v">cisco-csr1000v</span> <span class="c"># skip autodetect</span>
+    <span class="k">tags:</span>
+      - <span class="s">"device_namespace:prod-network"</span>
+      - <span class="s">"site:bkk-dc1"</span>
+      - <span class="s">"team:netops"</span></div>
+    </div>
+    <div class="card">
+      <div class="label" style="margin-bottom:6px;"><code>conf.d/network_path.d/conf.yaml</code> &nbsp;<a href="https://docs.datadoghq.com/network_monitoring/network_path/setup/" style="font-size:12px;">[setup docs]</a></div>
+      <div class="code-block" style="font-size:13px;"><span class="k">instances:</span>
+  - <span class="k">hostname:</span>            <span class="v">csr5-cnx-endpoint</span>
+    <span class="k">protocol:</span>            <span class="v">ICMP</span>
+    <span class="k">source_service:</span>      <span class="v">dd-lab-agent</span>
+    <span class="k">destination_service:</span> <span class="v">CSR5 endpoint</span>
+    <span class="k">tags:</span>
+      - <span class="s">"path_type:data-plane"</span>
+      - <span class="s">"expected_hops:5"</span>
+    <span class="k">max_ttl:</span>                 <span class="v">12</span>
+    <span class="k">traceroute_queries:</span>      <span class="v">3</span>
+    <span class="k">min_collection_interval:</span> <span class="v">60</span></div>
+    </div>
+    <div class="card">
+      <div class="label" style="margin-bottom:6px;">Subnet autodiscovery in <code>datadog.yaml</code> &nbsp;<a href="https://docs.datadoghq.com/network_monitoring/devices/snmp_scanner/" style="font-size:12px;">[scanner docs]</a></div>
+      <div class="code-block" style="font-size:13px;"><span class="k">network_devices:</span>
+  <span class="k">namespace:</span> <span class="v">prod-network</span>
+  <span class="k">autodiscovery:</span>
+    <span class="k">enabled:</span>            <span class="v">true</span>
+    <span class="k">workers:</span>            <span class="v">10</span>
+    <span class="k">discovery_interval:</span> <span class="v">300</span>
+    <span class="k">configs:</span>
+      - <span class="k">network_address:</span> <span class="v">10.10.20.0/24</span>
+        <span class="k">snmp_version:</span> <span class="v">3</span>
+        <span class="c"># … same auth/priv as above …</span></div>
+    </div>
+    <div class="card">
+      <div class="label" style="margin-bottom:6px;">SNMP traps receiver in <code>datadog.yaml</code> &nbsp;<a href="https://docs.datadoghq.com/network_monitoring/devices/snmp_traps/" style="font-size:12px;">[traps docs]</a></div>
+      <div class="code-block" style="font-size:13px;"><span class="k">network_devices:</span>
+  <span class="k">snmp_traps:</span>
+    <span class="k">enabled:</span> <span class="v">true</span>
+    <span class="k">port:</span> <span class="v">162</span>
+    <span class="k">bind_host:</span> <span class="v">0.0.0.0</span>
+    <span class="k">community_strings:</span>
+      - <span class="s">&lt;ro-community&gt;</span>
+    <span class="k">users:</span>
+      - <span class="k">username:</span> <span class="v">dduser</span>
+        <span class="k">authKey:</span> <span class="s">&lt;auth-pass&gt;</span>
+        <span class="k">privKey:</span> <span class="s">&lt;priv-pass&gt;</span>
+        <span class="c"># Then on each device:</span>
+        <span class="c"># snmp-server host &lt;agent&gt; v3 priv dduser</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 11 — STARTUP FLOW + STATE LIFECYCLE ============ -->
+<div class="slide">
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+  <div class="glow" style="width:600px; height:600px; background:rgba(0,199,183,0.18); top:-200px; right:-200px;"></div>
+
+  <div class="section-tag">Lifecycle</div>
+  <h2><code>terraform destroy &amp;&amp; apply</code> = working lab in ~12 min</h2>
+
+  <div class="flex-row" style="align-items:flex-start; margin-top:14px;">
+    <div style="flex:1;">
+      <h3 style="margin-bottom:10px;">First-time setup (one-time)</h3>
+      <div class="card">
+        <div class="code-block" style="font-size:13px;"><span class="c"># 1. .env with DD_API_KEY (gitignored)</span>
+echo <span class="s">"DD_API_KEY=&lt;key&gt;"</span> &gt; .env
+
+<span class="c"># 2. Customise tfvars + apply</span>
+cp terraform.tfvars.example terraform.tfvars
+<span class="k">terraform apply</span>
+
+<span class="c"># 3. Upload licensed qcow2 to cache (once, ever)</span>
+gsutil cp csr1000v.qcow2 \
+  gs://$(<span class="k">terraform output</span> -raw \
+  image_cache_bucket)/csr1000v.qcow2
+
+<span class="c"># 4. Reset VM → startup builds vrnetlab image,</span>
+<span class="c">#    caches it back to the bucket, deploys lab</span>
+gcloud compute instances <span class="k">reset</span> ddlab-ndm</div>
+      </div>
+    </div>
+    <div style="flex:1;">
+      <h3 style="margin-bottom:10px;">Steady-state (any time, fully automatic)</h3>
+      <div class="card-green">
+        <div class="code-block" style="font-size:13px;"><span class="c"># Bucket persists across destroy</span>
+<span class="k">terraform destroy</span>   <span class="c"># ~95s, expected error on bucket</span>
+<span class="k">terraform apply</span>     <span class="c"># ~75s — return to prompt</span>
+<span class="c"># Startup auto-deploy:</span>
+<span class="c">#   - gsutil cp + docker load (~30s)</span>
+<span class="c">#   - pre-seed cisco-csr1000v profile</span>
+<span class="c">#   - containerlab deploy (5-7 min)</span>
+<span class="c">#   - SNMP + NetworkPath up</span>
+<span class="c"># 5/5 SNMP OK, 8/8 NetworkPath OK</span>
+<span class="c"># in ~12 min. Hands-off.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-4" style="margin-top:18px;">
+    <div class="kpi"><div class="num">~95s</div><div class="lbl">terraform destroy</div></div>
+    <div class="kpi"><div class="num">~75s</div><div class="lbl">terraform apply</div></div>
+    <div class="kpi"><div class="num">~7-8 min</div><div class="lbl">CSR boot in parallel</div></div>
+    <div class="kpi"><div class="num">~12 min</div><div class="lbl">Total hands-off</div></div>
+  </div>
+
+  <div class="card" style="margin-top:18px;">
+    <div class="label" style="margin-bottom:6px;">What survives <code>terraform destroy</code> — by design</div>
+    <div class="grid-3" style="margin-top:10px;">
+      <div>
+        <h3 style="font-size:16px; color:#7FF5E9; margin-bottom:4px;">✓ Keeps</h3>
+        <p style="font-size:14px; margin:0;">GCS image-cache bucket (~2 GB qcow2 + tarball) — <code>force_destroy = false</code> by default. The bucket is the reason the next apply takes 12 min, not 25.</p>
+      </div>
+      <div>
+        <h3 style="font-size:16px; color:#FFB793; margin-bottom:4px;">✗ Destroys</h3>
+        <p style="font-size:14px; margin:0;">VM, VPC, subnet, Cloud Router, Cloud NAT, firewalls, IAM binding, boot disk. <code>destroy</code> errors cleanly on the bucket — that's the safety net firing.</p>
+      </div>
+      <div>
+        <h3 style="font-size:16px; color:#A892FF; margin-bottom:4px;">⚙ Override</h3>
+        <p style="font-size:14px; margin:0;"><code>terraform destroy -var image_cache_force_destroy=true</code> wipes the cache too. Use when rotating qcow2 or starting fully fresh.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SLIDE 12 — SUMMARY / CTA ============ -->
+<div class="slide" style="background: linear-gradient(135deg, #1D1133 0%, #0D1117 60%, #0D1117 100%);">
+  <img src="slides/hero.png" alt="" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0.32;">
+  <div style="position:absolute; inset:0; background:linear-gradient(90deg, rgba(13,17,23,0.92) 0%, rgba(13,17,23,0.6) 100%);"></div>
+  <div class="grid-overlay" style="opacity:0.4;"></div>
+
+  <div class="dd-sidebar">
+    <div class="brand">📊 Datadog</div>
+    <div class="label" style="margin-bottom:10px; color:rgba(255,255,255,0.7);">Bring it home</div>
+    <ul class="pillar-list" style="padding:0; margin:0; font-size:14px; line-height:1.9;">
+      <li><a href="https://docs.datadoghq.com/network_monitoring/devices/" style="color:#fff; border:none;">NDM</a></li>
+      <li><a href="https://docs.datadoghq.com/network_monitoring/network_path/" style="color:#fff; border:none;">NetworkPath</a></li>
+      <li><a href="https://docs.datadoghq.com/network_monitoring/devices/profiles/" style="color:#fff; border:none;">SNMP profiles</a></li>
+      <li><a href="https://docs.datadoghq.com/network_monitoring/devices/snmp_traps/" style="color:#fff; border:none;">SNMP traps</a></li>
+      <li><a href="https://docs.datadoghq.com/network_monitoring/devices/netflow/" style="color:#fff; border:none;">NetFlow</a></li>
+      <li><a href="https://docs.datadoghq.com/network_monitoring/devices/topology_map/" style="color:#fff; border:none;">Topology Map</a></li>
+    </ul>
+    <div style="flex:1;"></div>
+    <div style="font-size:12px; color:rgba(255,255,255,0.6);">Reach out: SE Channel #network-observability</div>
+  </div>
+
+  <div style="position:relative; max-width:1180px;">
+    <div class="section-tag">Wrap up</div>
+    <h1 style="background: linear-gradient(135deg, #fff 0%, #D0A8FF 60%, #A892FF 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">Try it on your next demo</h1>
+    <p class="subtitle" style="margin-top:10px;">Reproducible · fault-injectable · customer-safe · ~12 min from zero to working</p>
+
+    <div class="grid-3" style="margin-top:24px; max-width:1180px;">
+      <div class="card-purple">
+        <div class="label">📚 Repo</div>
+        <h3 style="margin-top:8px; font-size:17px;"><code>ndm/ddlab-automation/</code></h3>
+        <p style="font-size:14px; margin-top:6px;">
+        <a href="README.md" style="color:#D0A8FF;">README.md</a> — concepts &amp; integrations<br>
+        <a href="NETWORK-OBSERVABILITY.md" style="color:#D0A8FF;">NETWORK-OBSERVABILITY.md</a> — playbook<br>
+        <a href="TROUBLESHOOTING.md" style="color:#D0A8FF;">TROUBLESHOOTING.md</a> — gotchas</p>
+      </div>
+      <div class="card-purple">
+        <div class="label">🎬 Three demo modes</div>
+        <p style="font-size:14px; margin:6px 0 0 0;">
+          <strong style="color:#7FF5E9;">Show &amp; tell</strong> — walk through live data<br>
+          <strong style="color:#FFB793;">Fault inject</strong> — break it, watch alerts<br>
+          <strong style="color:#A892FF;">Hand-off POV</strong> — customer clones &amp; runs in their org
+        </p>
+      </div>
+      <div class="card-green">
+        <div class="label">🚀 Next steps</div>
+        <p style="font-size:14px; margin:6px 0 0 0;">
+        <strong>1.</strong> Read README + topology<br>
+        <strong>2.</strong> <code>terraform apply</code> in your sandbox project<br>
+        <strong>3.</strong> Practice Scenario 1 once before customer call<br>
+        <strong>4.</strong> Schedule a 30-min demo with prospect
+        </p>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:18px; max-width:1180px;">
+      <div class="card-orange">
+        <div class="label">💬 Need help?</div>
+        <p style="font-size:14px; margin:4px 0 0 0;">
+        Slack <strong>#network-observability-se</strong> for questions, demo scheduling, &amp; customer-specific topology requests. PRs welcome to <code>scripts/startup.sh.tpl</code> for new vendors / scenarios.
+        </p>
+      </div>
+      <div class="card">
+        <div class="label">📈 Datadog docs</div>
+        <p style="font-size:14px; margin:4px 0 0 0;">
+        <a href="https://docs.datadoghq.com/network_monitoring/devices/">NDM</a> ·
+        <a href="https://docs.datadoghq.com/network_monitoring/network_path/">NetworkPath</a> ·
+        <a href="https://docs.datadoghq.com/network_monitoring/devices/profiles/">SNMP profiles</a> ·
+        <a href="https://docs.datadoghq.com/network_monitoring/devices/snmp_traps/">Traps</a> ·
+        <a href="https://docs.datadoghq.com/network_monitoring/devices/netflow/">NetFlow</a> ·
+        <a href="https://docs.datadoghq.com/network_monitoring/cloud_network_monitoring/">CNM</a>
+        </p>
+      </div>
+    </div>
+
+    <div style="margin-top:24px; display:flex; gap:8px; flex-wrap:wrap; max-width:1180px;">
+      <span class="badge">5 CSRs</span>
+      <span class="badge">8 NetworkPath traces</span>
+      <span class="badge">5 hops</span>
+      <span class="badge badge-green">SNMP profiles</span>
+      <span class="badge badge-green">core loader</span>
+      <span class="badge badge-green">SNMP traps</span>
+      <span class="badge badge-green">CDP/LLDP topology</span>
+      <span class="badge badge-orange">tc netem fault injection</span>
+      <span class="badge badge-orange">hping3 load test</span>
+      <span class="badge badge-orange">Datadog events API</span>
+      <span class="badge">GCS image cache</span>
+      <span class="badge">~12 min destroy → apply</span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /#deck -->
+
+<script>
+const slides = Array.from(document.querySelectorAll('.slide'));
+let cur = 0;
+
+function go(dir) {
+  slides[cur].classList.remove('active');
+  slides[cur].classList.add('prev');
+  setTimeout(() => slides[cur].classList.remove('prev'), 500);
+  cur = (cur + dir + slides.length) % slides.length;
+  slides[cur].classList.add('active');
+  update();
+}
+
+function update() {
+  document.getElementById('counter').textContent = `${cur + 1} / ${slides.length}`;
+  document.getElementById('progress').style.width = `${((cur + 1) / slides.length) * 100}%`;
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') {
+    e.preventDefault(); go(1);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault(); go(-1);
+  } else if (e.key === 'Home') {
+    e.preventDefault(); slides[cur].classList.remove('active'); cur = 0; slides[cur].classList.add('active'); update();
+  } else if (e.key === 'End') {
+    e.preventDefault(); slides[cur].classList.remove('active'); cur = slides.length - 1; slides[cur].classList.add('active'); update();
+  }
+});
+
+document.getElementById('deck').addEventListener('click', e => {
+  if (e.target.closest('a, button')) return;
+  go(e.clientX > window.innerWidth / 2 ? 1 : -1);
+});
+
+update();
+</script>
+</body>
+</html>
